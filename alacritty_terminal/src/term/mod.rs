@@ -50,6 +50,217 @@ const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = TITLE_STACK_MAX_DEPTH;
 /// Default tab interval, corresponding to terminfo `it` value.
 const INITIAL_TABSTOPS: usize = 8;
 
+/// LaTeX math mode state for formula detection.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LaTeXMode {
+    /// Normal text mode.
+    #[default]
+    Normal,
+    /// Saw a `$`, waiting to see if next char starts a formula.
+    PendingDollar,
+    /// Inside a math formula, buffering content.
+    InMath,
+    /// Inside math, saw `$`, waiting to confirm end.
+    PendingEnd,
+}
+
+/// State for LaTeX formula detection using heuristic rules.
+///
+/// Detection rules (based on Markdown/xfun):
+/// - Start `$` must not be followed by space or digit
+/// - End `$` must not be preceded by space
+/// - End `$` must not be followed by alphanumeric
+#[derive(Debug, Clone)]
+pub struct LaTeXState {
+    /// Current parsing mode.
+    mode: LaTeXMode,
+    /// Buffer for formula content.
+    buffer: String,
+    /// Previous character (for checking start conditions).
+    prev_char: Option<char>,
+}
+
+impl Default for LaTeXState {
+    fn default() -> Self {
+        Self { mode: LaTeXMode::Normal, buffer: String::with_capacity(64), prev_char: None }
+    }
+}
+
+/// Convert LaTeX command to Unicode character.
+fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
+    // Greek letters (lowercase)
+    let result = match cmd {
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "epsilon" => "ε",
+        "varepsilon" => "ε",
+        "zeta" => "ζ",
+        "eta" => "η",
+        "theta" => "θ",
+        "vartheta" => "ϑ",
+        "iota" => "ι",
+        "kappa" => "κ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "nu" => "ν",
+        "xi" => "ξ",
+        "pi" => "π",
+        "varpi" => "ϖ",
+        "rho" => "ρ",
+        "varrho" => "ϱ",
+        "sigma" => "σ",
+        "varsigma" => "ς",
+        "tau" => "τ",
+        "upsilon" => "υ",
+        "phi" => "φ",
+        "varphi" => "ϕ",
+        "chi" => "χ",
+        "psi" => "ψ",
+        "omega" => "ω",
+        // Greek letters (uppercase)
+        "Gamma" => "Γ",
+        "Delta" => "Δ",
+        "Theta" => "Θ",
+        "Lambda" => "Λ",
+        "Xi" => "Ξ",
+        "Pi" => "Π",
+        "Sigma" => "Σ",
+        "Upsilon" => "Υ",
+        "Phi" => "Φ",
+        "Psi" => "Ψ",
+        "Omega" => "Ω",
+        // Math operators
+        "pm" => "±",
+        "mp" => "∓",
+        "times" => "×",
+        "div" => "÷",
+        "cdot" => "·",
+        "ast" => "∗",
+        "star" => "⋆",
+        "circ" => "∘",
+        "bullet" => "•",
+        // Relations
+        "leq" | "le" => "≤",
+        "geq" | "ge" => "≥",
+        "neq" | "ne" => "≠",
+        "approx" => "≈",
+        "equiv" => "≡",
+        "sim" => "∼",
+        "simeq" => "≃",
+        "cong" => "≅",
+        "propto" => "∝",
+        "ll" => "≪",
+        "gg" => "≫",
+        "subset" => "⊂",
+        "supset" => "⊃",
+        "subseteq" => "⊆",
+        "supseteq" => "⊇",
+        "in" => "∈",
+        "notin" => "∉",
+        "ni" => "∋",
+        // Arrows
+        "to" | "rightarrow" => "→",
+        "leftarrow" => "←",
+        "leftrightarrow" => "↔",
+        "Rightarrow" => "⇒",
+        "Leftarrow" => "⇐",
+        "Leftrightarrow" => "⇔",
+        "uparrow" => "↑",
+        "downarrow" => "↓",
+        "mapsto" => "↦",
+        // Big operators
+        "sum" => "∑",
+        "prod" => "∏",
+        "coprod" => "∐",
+        "int" => "∫",
+        "oint" => "∮",
+        "bigcup" => "⋃",
+        "bigcap" => "⋂",
+        "bigoplus" => "⨁",
+        "bigotimes" => "⨂",
+        // Misc symbols
+        "infty" => "∞",
+        "partial" => "∂",
+        "nabla" => "∇",
+        "forall" => "∀",
+        "exists" => "∃",
+        "nexists" => "∄",
+        "emptyset" | "varnothing" => "∅",
+        "neg" | "lnot" => "¬",
+        "land" | "wedge" => "∧",
+        "lor" | "vee" => "∨",
+        "cap" => "∩",
+        "cup" => "∪",
+        "setminus" => "∖",
+        "sqrt" => "√",
+        "surd" => "√",
+        "top" => "⊤",
+        "bot" => "⊥",
+        "angle" => "∠",
+        "triangle" => "△",
+        "diamond" => "◇",
+        "square" => "□",
+        "langle" => "⟨",
+        "rangle" => "⟩",
+        "lceil" => "⌈",
+        "rceil" => "⌉",
+        "lfloor" => "⌊",
+        "rfloor" => "⌋",
+        "prime" => "′",
+        "ldots" | "dots" => "…",
+        "cdots" => "⋯",
+        "vdots" => "⋮",
+        "ddots" => "⋱",
+        "hbar" => "ℏ",
+        "ell" => "ℓ",
+        "Re" => "ℜ",
+        "Im" => "ℑ",
+        "aleph" => "ℵ",
+        "wp" => "℘",
+        _ => return None,
+    };
+    Some(result)
+}
+
+/// Parse LaTeX formula and convert to Unicode string.
+fn parse_latex_formula(formula: &str) -> String {
+    let mut result = String::new();
+    let mut chars = formula.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // Parse LaTeX command
+            let mut cmd = String::new();
+            while let Some(&next) = chars.peek() {
+                if next.is_ascii_alphabetic() {
+                    cmd.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+            if let Some(unicode) = latex_to_unicode(&cmd) {
+                result.push_str(unicode);
+            } else if !cmd.is_empty() {
+                // Unknown command, keep as-is
+                result.push('\\');
+                result.push_str(&cmd);
+            } else {
+                // Escaped character like \$ or \{
+                if let Some(escaped) = chars.next() {
+                    result.push(escaped);
+                } else {
+                    result.push('\\');
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct TermMode: u32 {
@@ -327,6 +538,9 @@ pub struct Term<T> {
 
     /// Config directly for the terminal.
     config: Config,
+
+    /// State for LaTeX formula detection.
+    latex_state: LaTeXState,
 }
 
 /// Configuration options for the [`Term`].
@@ -441,6 +655,7 @@ impl<T> Term<T> {
             selection: Default::default(),
             title: Default::default(),
             mode: Default::default(),
+            latex_state: Default::default(),
         }
     }
 
@@ -1037,29 +1252,86 @@ impl<T> Term<T> {
         trace!("Setting keyboard mode to {new_mode:?}");
         self.mode |= new_mode;
     }
-}
 
-impl<T> Dimensions for Term<T> {
-    #[inline]
-    fn columns(&self) -> usize {
-        self.grid.columns()
+    /// Flush any pending LaTeX state.
+    /// For PendingEnd state (formula complete), parse and render the formula.
+    /// For other states, output buffered content as-is.
+    fn flush_pending_latex(&mut self)
+    where
+        T: EventListener,
+    {
+        match self.latex_state.mode {
+            LaTeXMode::Normal => {},
+            LaTeXMode::PendingDollar => {
+                // Output the pending $
+                self.input_char_internal('$');
+                self.latex_state.mode = LaTeXMode::Normal;
+            },
+            LaTeXMode::InMath => {
+                // Incomplete formula, output $ and buffered content as-is
+                self.input_char_internal('$');
+                let buffer = mem::take(&mut self.latex_state.buffer);
+                for c in buffer.chars() {
+                    self.input_char_internal(c);
+                }
+                self.latex_state.mode = LaTeXMode::Normal;
+            },
+            LaTeXMode::PendingEnd => {
+                // Formula is complete (saw closing $), parse and render with GPU
+                let formula = mem::take(&mut self.latex_state.buffer);
+                // Original width = buffer length + 2 (for the two $ signs)
+                let original_width = formula.len() + 2;
+                let result = parse_latex_formula(&formula);
+                let chars: Vec<char> = result.chars().collect();
+
+                if !chars.is_empty() {
+                    // 1. Write the first character
+                    let first_char = chars[0];
+                    self.input_char_internal(first_char);
+
+                    // 2. Get the cell we just wrote to and mark it as formula start
+                    let written_point = if self.grid.cursor.input_needs_wrap {
+                        Point::new(self.grid.cursor.point.line, Column(self.columns() - 1))
+                    } else {
+                        Point::new(
+                            self.grid.cursor.point.line,
+                            Column(self.grid.cursor.point.column.0.saturating_sub(1)),
+                        )
+                    };
+                    self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+
+                    // 3. Store remaining characters in the first cell
+                    if chars.len() > 1 {
+                        self.grid[written_point].push_math_chars(chars[1..].to_vec());
+                    }
+
+                    // 4. Output spacer cells to match original input width
+                    // We already wrote 1 cell, so we need (original_width - 1) more
+                    for _ in 1..original_width {
+                        self.input_char_internal(' ');
+                        // Mark as math spacer
+                        let spacer_point = if self.grid.cursor.input_needs_wrap {
+                            Point::new(self.grid.cursor.point.line, Column(self.columns() - 1))
+                        } else {
+                            Point::new(
+                                self.grid.cursor.point.line,
+                                Column(self.grid.cursor.point.column.0.saturating_sub(1)),
+                            )
+                        };
+                        self.grid[spacer_point].set_math_spacer();
+                    }
+                }
+                self.latex_state.mode = LaTeXMode::Normal;
+            },
+        }
     }
 
-    #[inline]
-    fn screen_lines(&self) -> usize {
-        self.grid.screen_lines()
-    }
-
-    #[inline]
-    fn total_lines(&self) -> usize {
-        self.grid.total_lines()
-    }
-}
-
-impl<T: EventListener> Handler for Term<T> {
-    /// A character to be displayed.
-    #[inline(never)]
-    fn input(&mut self, c: char) {
+    /// Internal method to write a character to the terminal.
+    /// This contains the original input() logic without LaTeX processing.
+    fn input_char_internal(&mut self, c: char)
+    where
+        T: EventListener,
+    {
         // Number of cells the char will occupy.
         let width = match c.width() {
             Some(width) => width,
@@ -1136,6 +1408,150 @@ impl<T: EventListener> Handler for Term<T> {
             self.grid.cursor.input_needs_wrap = true;
         }
     }
+}
+
+impl<T> Dimensions for Term<T> {
+    #[inline]
+    fn columns(&self) -> usize {
+        self.grid.columns()
+    }
+
+    #[inline]
+    fn screen_lines(&self) -> usize {
+        self.grid.screen_lines()
+    }
+
+    #[inline]
+    fn total_lines(&self) -> usize {
+        self.grid.total_lines()
+    }
+}
+
+impl<T: EventListener> Handler for Term<T> {
+    /// A character to be displayed.
+    ///
+    /// This method implements LaTeX formula detection using heuristic rules:
+    /// - Start `$` must not be followed by space or digit
+    /// - End `$` must not be preceded by space
+    /// - End `$` must not be followed by alphanumeric
+    #[inline(never)]
+    fn input(&mut self, c: char) {
+        match self.latex_state.mode {
+            LaTeXMode::Normal => {
+                if c == '$' {
+                    // Check if this could be start of formula
+                    // Start $ should be preceded by whitespace, start of line, or '('
+                    let prev = self.latex_state.prev_char;
+                    let valid_start =
+                        prev.is_none() || prev.unwrap().is_whitespace() || prev.unwrap() == '(';
+
+                    if valid_start {
+                        // Could be start of formula, wait for next char
+                        self.latex_state.mode = LaTeXMode::PendingDollar;
+                        self.latex_state.prev_char = Some(c);
+                        return;
+                    }
+                }
+                // Normal character, output it
+                self.input_char_internal(c);
+                self.latex_state.prev_char = Some(c);
+            },
+            LaTeXMode::PendingDollar => {
+                // We saw $, now check the next character
+                // Only consider it a formula start if followed by \
+                // This is more conservative to avoid false positives with shell syntax
+                if c == '\\' {
+                    // Start of inline formula (LaTeX commands start with \)
+                    self.latex_state.mode = LaTeXMode::InMath;
+                    self.latex_state.buffer.clear();
+                    self.latex_state.buffer.push(c);
+                } else {
+                    // Not a formula, output $ and current char normally
+                    self.input_char_internal('$');
+                    self.input_char_internal(c);
+                    self.latex_state.mode = LaTeXMode::Normal;
+                }
+                self.latex_state.prev_char = Some(c);
+            },
+            LaTeXMode::InMath => {
+                if c == '$' {
+                    // Potential end of formula
+                    // Check if preceded by space (invalid end)
+                    let last_char = self.latex_state.buffer.chars().last();
+                    if last_char.is_some() && !last_char.unwrap().is_whitespace() {
+                        // Could be valid end, wait to check next char
+                        self.latex_state.mode = LaTeXMode::PendingEnd;
+                    } else {
+                        // Invalid end (preceded by space or empty), treat $ as content
+                        self.latex_state.buffer.push(c);
+                    }
+                } else {
+                    // Continue buffering formula content
+                    self.latex_state.buffer.push(c);
+                }
+                self.latex_state.prev_char = Some(c);
+            },
+            LaTeXMode::PendingEnd => {
+                // We're at end $, check the following character
+                if c.is_alphanumeric() {
+                    // Not a valid end: $ followed by alphanumeric
+                    // The $ is part of the formula content
+                    self.latex_state.buffer.push('$');
+                    self.latex_state.buffer.push(c);
+                    self.latex_state.mode = LaTeXMode::InMath;
+                } else {
+                    // Valid end! Parse formula and render using GPU approach
+                    let formula = mem::take(&mut self.latex_state.buffer);
+                    // Original width = buffer length + 2 (for the two $ signs)
+                    let original_width = formula.len() + 2;
+                    let result = parse_latex_formula(&formula);
+                    let chars: Vec<char> = result.chars().collect();
+
+                    if !chars.is_empty() {
+                        // 1. Write the first character
+                        let first_char = chars[0];
+                        self.input_char_internal(first_char);
+
+                        // 2. Get the cell we just wrote to and mark it as formula start
+                        let written_point = if self.grid.cursor.input_needs_wrap {
+                            Point::new(self.grid.cursor.point.line, Column(self.columns() - 1))
+                        } else {
+                            Point::new(
+                                self.grid.cursor.point.line,
+                                Column(self.grid.cursor.point.column.0.saturating_sub(1)),
+                            )
+                        };
+                        self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+
+                        // 3. Store remaining characters in the first cell
+                        if chars.len() > 1 {
+                            self.grid[written_point].push_math_chars(chars[1..].to_vec());
+                        }
+
+                        // 4. Output spacer cells to match original input width
+                        // We already wrote 1 cell, so we need (original_width - 1) more
+                        for _ in 1..original_width {
+                            self.input_char_internal(' ');
+                            // Mark as math spacer
+                            let spacer_point = if self.grid.cursor.input_needs_wrap {
+                                Point::new(self.grid.cursor.point.line, Column(self.columns() - 1))
+                            } else {
+                                Point::new(
+                                    self.grid.cursor.point.line,
+                                    Column(self.grid.cursor.point.column.0.saturating_sub(1)),
+                                )
+                            };
+                            self.grid[spacer_point].set_math_spacer();
+                        }
+                    }
+                    // Output the character that followed the closing $
+                    self.input_char_internal(c);
+                    self.latex_state.mode = LaTeXMode::Normal;
+                }
+                self.latex_state.prev_char = Some(c);
+            },
+        }
+    }
 
     #[inline]
     fn decaln(&mut self) {
@@ -1154,6 +1570,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn goto(&mut self, line: i32, col: usize) {
+        self.flush_pending_latex();
         let line = Line(line);
         let col = Column(col);
 
@@ -1231,6 +1648,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn move_forward(&mut self, cols: usize) {
+        self.flush_pending_latex();
         trace!("Moving forward: {cols}");
         let last_column = cmp::min(self.grid.cursor.point.column + cols, self.last_column());
 
@@ -1243,6 +1661,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn move_backward(&mut self, cols: usize) {
+        self.flush_pending_latex();
         trace!("Moving backward: {cols}");
         let column = self.grid.cursor.point.column.saturating_sub(cols);
 
@@ -1396,6 +1815,7 @@ impl<T: EventListener> Handler for Term<T> {
     /// Backspace.
     #[inline]
     fn backspace(&mut self) {
+        self.flush_pending_latex();
         trace!("Backspace");
 
         if self.grid.cursor.point.column > Column(0) {
@@ -1410,6 +1830,9 @@ impl<T: EventListener> Handler for Term<T> {
     /// Carriage return.
     #[inline]
     fn carriage_return(&mut self) {
+        self.flush_pending_latex();
+        // Reset prev_char so new line can start formula detection fresh
+        self.latex_state.prev_char = None;
         trace!("Carriage return");
         let new_col = 0;
         let line = self.grid.cursor.point.line.0 as usize;
@@ -1421,6 +1844,9 @@ impl<T: EventListener> Handler for Term<T> {
     /// Linefeed.
     #[inline]
     fn linefeed(&mut self) {
+        self.flush_pending_latex();
+        // Reset prev_char so new line can start formula detection fresh
+        self.latex_state.prev_char = None;
         trace!("Linefeed");
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
@@ -1483,18 +1909,21 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
+        self.flush_pending_latex();
         let origin = self.scroll_region.start;
         self.scroll_up_relative(origin, lines);
     }
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
+        self.flush_pending_latex();
         let origin = self.scroll_region.start;
         self.scroll_down_relative(origin, lines);
     }
 
     #[inline]
     fn insert_blank_lines(&mut self, lines: usize) {
+        self.flush_pending_latex();
         trace!("Inserting blank {lines} lines");
 
         let origin = self.grid.cursor.point.line;
@@ -1505,6 +1934,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn delete_lines(&mut self, lines: usize) {
+        self.flush_pending_latex();
         let origin = self.grid.cursor.point.line;
         let lines = cmp::min(self.screen_lines() - origin.0 as usize, lines);
 
@@ -1517,6 +1947,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn erase_chars(&mut self, count: usize) {
+        self.flush_pending_latex();
         let cursor = &self.grid.cursor;
 
         trace!("Erasing chars: count={}, col={}", count, cursor.point.column);
@@ -1536,6 +1967,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn delete_chars(&mut self, count: usize) {
+        self.flush_pending_latex();
         let columns = self.columns();
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
@@ -1633,6 +2065,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn clear_line(&mut self, mode: ansi::LineClearMode) {
+        self.flush_pending_latex();
         trace!("Clearing line: {mode:?}");
 
         let cursor = &self.grid.cursor;
@@ -1748,6 +2181,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn clear_screen(&mut self, mode: ansi::ClearMode) {
+        self.flush_pending_latex();
         trace!("Clearing screen: {mode:?}");
         let bg = self.grid.cursor.template.bg;
 
@@ -1879,6 +2313,7 @@ impl<T: EventListener> Handler for Term<T> {
     /// Set a terminal attribute.
     #[inline]
     fn terminal_attribute(&mut self, attr: Attr) {
+        self.flush_pending_latex();
         trace!("Setting attribute: {attr:?}");
         let cursor = &mut self.grid.cursor;
         match attr {

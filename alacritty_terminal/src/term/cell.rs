@@ -30,6 +30,8 @@ bitflags! {
         const UNDERCURL                 = 0b0001_0000_0000_0000;
         const DOTTED_UNDERLINE          = 0b0010_0000_0000_0000;
         const DASHED_UNDERLINE          = 0b0100_0000_0000_0000;
+        /// Cell is the start of a math formula region.
+        const MATH_FORMULA              = 0b1000_0000_0000_0000;
         const ALL_UNDERLINES            = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
                                         | Self::UNDERCURL.bits() | Self::DOTTED_UNDERLINE.bits()
                                         | Self::DASHED_UNDERLINE.bits();
@@ -126,6 +128,12 @@ pub struct CellExtra {
     zerowidth: Vec<char>,
     underline_color: Option<Color>,
     hyperlink: Option<Hyperlink>,
+    /// Characters in a math formula (stored in the first cell of the formula).
+    #[cfg_attr(feature = "serde", serde(default))]
+    math_chars: Option<Vec<char>>,
+    /// Whether this cell is a spacer for a math formula.
+    #[cfg_attr(feature = "serde", serde(default))]
+    math_spacer: bool,
 }
 
 /// Content and attributes of a single cell in the terminal grid.
@@ -218,6 +226,32 @@ impl Cell {
     #[inline]
     pub fn hyperlink(&self) -> Option<Hyperlink> {
         self.extra.as_ref()?.hyperlink.clone()
+    }
+
+    /// Math formula characters stored in this cell (for formula start cells).
+    #[inline]
+    pub fn math_chars(&self) -> Option<&[char]> {
+        self.extra.as_ref()?.math_chars.as_deref()
+    }
+
+    /// Store math formula characters in this cell.
+    #[inline]
+    pub fn push_math_chars(&mut self, chars: Vec<char>) {
+        let extra = self.extra.get_or_insert(Default::default());
+        Arc::make_mut(extra).math_chars = Some(chars);
+    }
+
+    /// Check if this cell is a math formula spacer.
+    #[inline]
+    pub fn is_math_spacer(&self) -> bool {
+        self.extra.as_ref().map_or(false, |extra| extra.math_spacer)
+    }
+
+    /// Mark this cell as a math formula spacer.
+    #[inline]
+    pub fn set_math_spacer(&mut self) {
+        let extra = self.extra.get_or_insert(Default::default());
+        Arc::make_mut(extra).math_spacer = true;
     }
 }
 

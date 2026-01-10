@@ -176,8 +176,11 @@ impl Iterator for RenderableContent<'_> {
                 }
 
                 return Some(cell);
-            } else if !cell.is_empty() && !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                // Skip empty cells and wide char spacers.
+            } else if !cell.is_empty()
+                && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+                && !cell.extra.as_ref().map_or(false, |e| e.math_spacer)
+            {
+                // Skip empty cells, wide char spacers, and math formula spacers.
                 return Some(cell);
             }
         }
@@ -203,6 +206,10 @@ pub struct RenderableCell {
 pub struct RenderableCellExtra {
     pub zerowidth: Option<Vec<char>>,
     pub hyperlink: Option<Hyperlink>,
+    /// Characters in a math formula (for formula start cells).
+    pub math_chars: Option<Vec<char>>,
+    /// Whether this cell is a math formula spacer.
+    pub math_spacer: bool,
 }
 
 impl RenderableCell {
@@ -287,13 +294,19 @@ impl RenderableCell {
 
         let zerowidth = cell.zerowidth();
         let hyperlink = cell.hyperlink();
+        let math_chars = cell.math_chars();
+        let math_spacer = cell.is_math_spacer();
 
-        let extra = (zerowidth.is_some() || hyperlink.is_some()).then(|| {
-            Box::new(RenderableCellExtra {
-                zerowidth: zerowidth.map(|zerowidth| zerowidth.to_vec()),
-                hyperlink,
-            })
-        });
+        let extra =
+            (zerowidth.is_some() || hyperlink.is_some() || math_chars.is_some() || math_spacer)
+                .then(|| {
+                    Box::new(RenderableCellExtra {
+                        zerowidth: zerowidth.map(|zerowidth| zerowidth.to_vec()),
+                        hyperlink,
+                        math_chars: math_chars.map(|chars| chars.to_vec()),
+                        math_spacer,
+                    })
+                });
 
         RenderableCell { flags, character, bg_alpha, point, fg, bg, underline, extra }
     }

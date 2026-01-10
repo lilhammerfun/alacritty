@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 use crossfont::{GlyphKey, RasterizedGlyph};
 
+use alacritty_terminal::index::Point;
 use alacritty_terminal::term::cell::Flags;
 
 use crate::display::SizeInfo;
@@ -158,6 +159,31 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
         // Add cell to batch.
         let glyph = glyph_cache.get(glyph_key, self, true);
         self.add_render_item(&cell, &glyph, size_info);
+
+        // Render math formula characters with offset.
+        if cell.flags.contains(Flags::MATH_FORMULA) {
+            if let Some(math_chars) =
+                cell.extra.as_mut().and_then(|extra| extra.math_chars.take().filter(|_| !hidden))
+            {
+                for (i, character) in math_chars.into_iter().enumerate() {
+                    glyph_key.character = character;
+                    let glyph = glyph_cache.get(glyph_key, self, false);
+
+                    // Create a modified cell with offset point for rendering.
+                    let offset_cell = RenderableCell {
+                        character,
+                        point: Point::new(cell.point.line, cell.point.column + i + 1),
+                        fg: cell.fg,
+                        bg: cell.bg,
+                        bg_alpha: 0., // Don't render background for offset characters.
+                        underline: cell.underline,
+                        flags: cell.flags & !Flags::MATH_FORMULA, // Remove formula flag.
+                        extra: None,
+                    };
+                    self.add_render_item(&offset_cell, &glyph, size_info);
+                }
+            }
+        }
 
         // Render visible zero-width characters.
         if let Some(zerowidth) =
