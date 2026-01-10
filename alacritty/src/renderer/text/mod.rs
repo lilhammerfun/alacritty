@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use crossfont::{GlyphKey, RasterizedGlyph};
 
 use alacritty_terminal::index::Point;
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::cell::{Flags, MathLayout};
 
 use crate::display::SizeInfo;
 use crate::display::content::RenderableCell;
@@ -160,24 +160,168 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
         let glyph = glyph_cache.get(glyph_key, self, true);
         self.add_render_item(&cell, &glyph, size_info);
 
-        // Render math formula characters with offset.
+        // Render math formula with complex layout.
         if cell.flags.contains(Flags::MATH_FORMULA) {
-            if let Some(math_chars) =
+            if let Some(layout) = cell.extra.as_mut().and_then(|extra| extra.math_layout.take()) {
+                let cell_height = size_info.cell_height() as i16;
+
+                match layout {
+                    MathLayout::Fraction { numerator, denominator } => {
+                        // Vertical offset: 40% of cell height.
+                        let y_offset = (cell_height * 2) / 5;
+
+                        // Render numerator (above the fraction line).
+                        for (i, &ch) in numerator.iter().enumerate() {
+                            glyph_key.character = ch;
+                            let mut glyph = glyph_cache.get(glyph_key, self, false);
+                            glyph.top += y_offset;
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, cell.point.column + i),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+
+                        // Render denominator (below the fraction line).
+                        for (i, &ch) in denominator.iter().enumerate() {
+                            glyph_key.character = ch;
+                            let mut glyph = glyph_cache.get(glyph_key, self, false);
+                            glyph.top -= y_offset;
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, cell.point.column + i),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+                        // Fraction line is already rendered as the main cell character.
+                    },
+                    MathLayout::Superscript { base, script } => {
+                        // Render base characters (skip first, already rendered).
+                        for (i, &ch) in base.iter().skip(1).enumerate() {
+                            glyph_key.character = ch;
+                            let glyph = glyph_cache.get(glyph_key, self, false);
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, cell.point.column + i + 1),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+
+                        // Render script characters (raised, smaller offset).
+                        let y_offset = (cell_height * 2) / 5;
+                        for (i, &ch) in script.iter().enumerate() {
+                            glyph_key.character = ch;
+                            let mut glyph = glyph_cache.get(glyph_key, self, false);
+                            glyph.top += y_offset;
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(
+                                    cell.point.line,
+                                    cell.point.column + base.len() + i,
+                                ),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+                    },
+                    MathLayout::Subscript { base, script } => {
+                        // Render base characters (skip first, already rendered).
+                        for (i, &ch) in base.iter().skip(1).enumerate() {
+                            glyph_key.character = ch;
+                            let glyph = glyph_cache.get(glyph_key, self, false);
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, cell.point.column + i + 1),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+
+                        // Render script characters (lowered).
+                        let y_offset = (cell_height * 2) / 5;
+                        for (i, &ch) in script.iter().enumerate() {
+                            glyph_key.character = ch;
+                            let mut glyph = glyph_cache.get(glyph_key, self, false);
+                            glyph.top -= y_offset;
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(
+                                    cell.point.line,
+                                    cell.point.column + base.len() + i,
+                                ),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+                    },
+                    MathLayout::Sqrt { content } => {
+                        // Sqrt symbol is already rendered as main character.
+                        // Render content characters after the sqrt symbol.
+                        for (i, &ch) in content.iter().enumerate() {
+                            glyph_key.character = ch;
+                            let glyph = glyph_cache.get(glyph_key, self, false);
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, cell.point.column + i + 1),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+                    },
+                }
+            } else if let Some(math_chars) =
                 cell.extra.as_mut().and_then(|extra| extra.math_chars.take().filter(|_| !hidden))
             {
+                // Simple formula: render characters with X offset.
                 for (i, character) in math_chars.into_iter().enumerate() {
                     glyph_key.character = character;
                     let glyph = glyph_cache.get(glyph_key, self, false);
-
-                    // Create a modified cell with offset point for rendering.
                     let offset_cell = RenderableCell {
                         character,
                         point: Point::new(cell.point.line, cell.point.column + i + 1),
                         fg: cell.fg,
                         bg: cell.bg,
-                        bg_alpha: 0., // Don't render background for offset characters.
+                        bg_alpha: 0.,
                         underline: cell.underline,
-                        flags: cell.flags & !Flags::MATH_FORMULA, // Remove formula flag.
+                        flags: cell.flags & !Flags::MATH_FORMULA,
                         extra: None,
                     };
                     self.add_render_item(&offset_cell, &glyph, size_info);

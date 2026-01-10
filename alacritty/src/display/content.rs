@@ -7,7 +7,7 @@ use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Dimensions, Indexed};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::selection::SelectionRange;
-use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
+use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink, MathLayout};
 use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{self, RenderableContent as TerminalContent, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
@@ -210,6 +210,8 @@ pub struct RenderableCellExtra {
     pub math_chars: Option<Vec<char>>,
     /// Whether this cell is a math formula spacer.
     pub math_spacer: bool,
+    /// Complex math layout for vertical rendering.
+    pub math_layout: Option<MathLayout>,
 }
 
 impl RenderableCell {
@@ -296,17 +298,22 @@ impl RenderableCell {
         let hyperlink = cell.hyperlink();
         let math_chars = cell.math_chars();
         let math_spacer = cell.is_math_spacer();
+        let math_layout = cell.math_layout();
 
-        let extra =
-            (zerowidth.is_some() || hyperlink.is_some() || math_chars.is_some() || math_spacer)
-                .then(|| {
-                    Box::new(RenderableCellExtra {
-                        zerowidth: zerowidth.map(|zerowidth| zerowidth.to_vec()),
-                        hyperlink,
-                        math_chars: math_chars.map(|chars| chars.to_vec()),
-                        math_spacer,
-                    })
-                });
+        let extra = (zerowidth.is_some()
+            || hyperlink.is_some()
+            || math_chars.is_some()
+            || math_spacer
+            || math_layout.is_some())
+        .then(|| {
+            Box::new(RenderableCellExtra {
+                zerowidth: zerowidth.map(|zerowidth| zerowidth.to_vec()),
+                hyperlink,
+                math_chars: math_chars.map(|chars| chars.to_vec()),
+                math_spacer,
+                math_layout: math_layout.cloned(),
+            })
+        });
 
         RenderableCell { flags, character, bg_alpha, point, fg, bg, underline, extra }
     }

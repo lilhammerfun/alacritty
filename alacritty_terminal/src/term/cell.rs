@@ -9,6 +9,30 @@ use crate::grid::{self, GridCell};
 use crate::index::Column;
 use crate::vte::ansi::{Color, Hyperlink as VteHyperlink, NamedColor};
 
+/// Math layout types for complex formula rendering.
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MathLayout {
+    /// Fraction: numerator over denominator.
+    Fraction { numerator: Vec<char>, denominator: Vec<char> },
+    /// Superscript: base^script.
+    Superscript { base: Vec<char>, script: Vec<char> },
+    /// Subscript: base_script.
+    Subscript { base: Vec<char>, script: Vec<char> },
+    /// Square root: √content.
+    Sqrt { content: Vec<char> },
+}
+
+/// Deprecated: Use MathLayout::Fraction instead.
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MathFraction {
+    /// Numerator characters (displayed above the fraction line).
+    pub numerator: Vec<char>,
+    /// Denominator characters (displayed below the fraction line).
+    pub denominator: Vec<char>,
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -134,6 +158,9 @@ pub struct CellExtra {
     /// Whether this cell is a spacer for a math formula.
     #[cfg_attr(feature = "serde", serde(default))]
     math_spacer: bool,
+    /// Complex math layout (fraction, superscript, subscript, sqrt).
+    #[cfg_attr(feature = "serde", serde(default))]
+    math_layout: Option<MathLayout>,
 }
 
 /// Content and attributes of a single cell in the terminal grid.
@@ -252,6 +279,19 @@ impl Cell {
     pub fn set_math_spacer(&mut self) {
         let extra = self.extra.get_or_insert(Default::default());
         Arc::make_mut(extra).math_spacer = true;
+    }
+
+    /// Get the math layout stored in this cell.
+    #[inline]
+    pub fn math_layout(&self) -> Option<&MathLayout> {
+        self.extra.as_ref()?.math_layout.as_ref()
+    }
+
+    /// Store a math layout in this cell.
+    #[inline]
+    pub fn set_math_layout(&mut self, layout: MathLayout) {
+        let extra = self.extra.get_or_insert(Default::default());
+        Arc::make_mut(extra).math_layout = Some(layout);
     }
 }
 
