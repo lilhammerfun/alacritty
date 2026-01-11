@@ -21,6 +21,9 @@ pub enum MathLayout {
     Subscript { base: Vec<char>, script: Vec<char> },
     /// Square root: √content.
     Sqrt { content: Vec<char> },
+    /// Base with both subscript and superscript: base_{lower}^{upper}.
+    /// Used for big operators like \sum_{i=1}^{n}, \int_a^b.
+    SubSuperscript { base: Vec<char>, lower: Vec<char>, upper: Vec<char> },
 }
 
 /// Deprecated: Use MathLayout::Fraction instead.

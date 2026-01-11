@@ -1,5 +1,6 @@
 use bitflags::bitflags;
 use crossfont::{GlyphKey, RasterizedGlyph};
+use log::debug;
 
 use alacritty_terminal::index::Point;
 use alacritty_terminal::term::cell::{Flags, MathLayout};
@@ -162,22 +163,32 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
 
         // Render math formula with complex layout.
         if cell.flags.contains(Flags::MATH_FORMULA) {
+            debug!("MATH_FORMULA flag detected, extra: {:?}", cell.extra.is_some());
             if let Some(layout) = cell.extra.as_mut().and_then(|extra| extra.math_layout.take()) {
+                debug!("MathLayout found: {:?}", layout);
                 let cell_height = size_info.cell_height() as i16;
 
                 match layout {
                     MathLayout::Fraction { numerator, denominator } => {
-                        // Vertical offset: 40% of cell height.
+                        // Note: crossfont ignores size in GlyphKey, so we manually scale glyphs.
+                        // All chars share same column, use cumulative left offset for compact layout.
                         let y_offset = (cell_height * 2) / 5;
+                        let scale = 0.7f32;
 
-                        // Render numerator (above the fraction line).
-                        for (i, &ch) in numerator.iter().enumerate() {
+                        // Render numerator (above the fraction line, 70% size).
+                        let mut x_offset = 0i16;
+                        for &ch in numerator.iter() {
                             glyph_key.character = ch;
                             let mut glyph = glyph_cache.get(glyph_key, self, false);
-                            glyph.top += y_offset;
+                            // Manually scale glyph dimensions.
+                            let scaled_width = (glyph.width as f32 * scale) as i16;
+                            glyph.width = scaled_width;
+                            glyph.height = (glyph.height as f32 * scale) as i16;
+                            glyph.top = (glyph.top as f32 * scale) as i16 + y_offset;
+                            glyph.left = (glyph.left as f32 * scale) as i16 + x_offset;
                             let offset_cell = RenderableCell {
                                 character: ch,
-                                point: Point::new(cell.point.line, cell.point.column + i),
+                                point: Point::new(cell.point.line, cell.point.column),
                                 fg: cell.fg,
                                 bg: cell.bg,
                                 bg_alpha: 0.,
@@ -186,16 +197,23 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                                 extra: None,
                             };
                             self.add_render_item(&offset_cell, &glyph, size_info);
+                            x_offset += scaled_width;
                         }
 
-                        // Render denominator (below the fraction line).
-                        for (i, &ch) in denominator.iter().enumerate() {
+                        // Render denominator (below the fraction line, 70% size).
+                        let mut x_offset = 0i16;
+                        for &ch in denominator.iter() {
                             glyph_key.character = ch;
                             let mut glyph = glyph_cache.get(glyph_key, self, false);
-                            glyph.top -= y_offset;
+                            // Manually scale glyph dimensions.
+                            let scaled_width = (glyph.width as f32 * scale) as i16;
+                            glyph.width = scaled_width;
+                            glyph.height = (glyph.height as f32 * scale) as i16;
+                            glyph.top = (glyph.top as f32 * scale) as i16 - y_offset;
+                            glyph.left = (glyph.left as f32 * scale) as i16 + x_offset;
                             let offset_cell = RenderableCell {
                                 character: ch,
-                                point: Point::new(cell.point.line, cell.point.column + i),
+                                point: Point::new(cell.point.line, cell.point.column),
                                 fg: cell.fg,
                                 bg: cell.bg,
                                 bg_alpha: 0.,
@@ -204,6 +222,7 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                                 extra: None,
                             };
                             self.add_render_item(&offset_cell, &glyph, size_info);
+                            x_offset += scaled_width;
                         }
                         // Fraction line is already rendered as the main cell character.
                     },
@@ -225,18 +244,24 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                             self.add_render_item(&offset_cell, &glyph, size_info);
                         }
 
-                        // Render script characters (raised, smaller offset).
+                        // Render script characters (raised, 70% size).
+                        // Note: crossfont ignores size in GlyphKey, so we manually scale the glyph.
+                        // All script chars share same column, use cumulative left offset for compact layout.
                         let y_offset = (cell_height * 2) / 5;
-                        for (i, &ch) in script.iter().enumerate() {
+                        let scale = 0.7f32;
+                        let mut x_offset = 0i16;
+                        for &ch in script.iter() {
                             glyph_key.character = ch;
                             let mut glyph = glyph_cache.get(glyph_key, self, false);
-                            glyph.top += y_offset;
+                            // Manually scale glyph dimensions.
+                            let scaled_width = (glyph.width as f32 * scale) as i16;
+                            glyph.width = scaled_width;
+                            glyph.height = (glyph.height as f32 * scale) as i16;
+                            glyph.top = (glyph.top as f32 * scale) as i16 + y_offset;
+                            glyph.left = (glyph.left as f32 * scale) as i16 + x_offset;
                             let offset_cell = RenderableCell {
                                 character: ch,
-                                point: Point::new(
-                                    cell.point.line,
-                                    cell.point.column + base.len() + i,
-                                ),
+                                point: Point::new(cell.point.line, cell.point.column + base.len()),
                                 fg: cell.fg,
                                 bg: cell.bg,
                                 bg_alpha: 0.,
@@ -245,6 +270,7 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                                 extra: None,
                             };
                             self.add_render_item(&offset_cell, &glyph, size_info);
+                            x_offset += scaled_width;
                         }
                     },
                     MathLayout::Subscript { base, script } => {
@@ -265,18 +291,24 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                             self.add_render_item(&offset_cell, &glyph, size_info);
                         }
 
-                        // Render script characters (lowered).
+                        // Render script characters (lowered, 70% size).
+                        // Note: crossfont ignores size in GlyphKey, so we manually scale the glyph.
+                        // All script chars share same column, use cumulative left offset for compact layout.
                         let y_offset = (cell_height * 2) / 5;
-                        for (i, &ch) in script.iter().enumerate() {
+                        let scale = 0.7f32;
+                        let mut x_offset = 0i16;
+                        for &ch in script.iter() {
                             glyph_key.character = ch;
                             let mut glyph = glyph_cache.get(glyph_key, self, false);
-                            glyph.top -= y_offset;
+                            // Manually scale glyph dimensions.
+                            let scaled_width = (glyph.width as f32 * scale) as i16;
+                            glyph.width = scaled_width;
+                            glyph.height = (glyph.height as f32 * scale) as i16;
+                            glyph.top = (glyph.top as f32 * scale) as i16 - y_offset;
+                            glyph.left = (glyph.left as f32 * scale) as i16 + x_offset;
                             let offset_cell = RenderableCell {
                                 character: ch,
-                                point: Point::new(
-                                    cell.point.line,
-                                    cell.point.column + base.len() + i,
-                                ),
+                                point: Point::new(cell.point.line, cell.point.column + base.len()),
                                 fg: cell.fg,
                                 bg: cell.bg,
                                 bg_alpha: 0.,
@@ -285,6 +317,7 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                                 extra: None,
                             };
                             self.add_render_item(&offset_cell, &glyph, size_info);
+                            x_offset += scaled_width;
                         }
                     },
                     MathLayout::Sqrt { content } => {
@@ -304,6 +337,77 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                                 extra: None,
                             };
                             self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+                    },
+                    MathLayout::SubSuperscript { base, lower, upper } => {
+                        // Render remaining base characters (skip first, already rendered).
+                        for (i, &ch) in base.iter().skip(1).enumerate() {
+                            glyph_key.character = ch;
+                            let glyph = glyph_cache.get(glyph_key, self, false);
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, cell.point.column + i + 1),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                        }
+
+                        // Render lower script (subscript, 70% size, lowered).
+                        // All script chars share same column, use cumulative left offset.
+                        let y_offset = (cell_height * 2) / 5;
+                        let scale = 0.7f32;
+                        let script_column = cell.point.column + base.len();
+                        let mut x_offset = 0i16;
+                        for &ch in lower.iter() {
+                            glyph_key.character = ch;
+                            let mut glyph = glyph_cache.get(glyph_key, self, false);
+                            let scaled_width = (glyph.width as f32 * scale) as i16;
+                            glyph.width = scaled_width;
+                            glyph.height = (glyph.height as f32 * scale) as i16;
+                            glyph.top = (glyph.top as f32 * scale) as i16 - y_offset;
+                            glyph.left = (glyph.left as f32 * scale) as i16 + x_offset;
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, script_column),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                            x_offset += scaled_width;
+                        }
+
+                        // Render upper script (superscript, 70% size, raised).
+                        // Reset x_offset so upper script also starts right after base symbol.
+                        let mut x_offset = 0i16;
+                        for &ch in upper.iter() {
+                            glyph_key.character = ch;
+                            let mut glyph = glyph_cache.get(glyph_key, self, false);
+                            let scaled_width = (glyph.width as f32 * scale) as i16;
+                            glyph.width = scaled_width;
+                            glyph.height = (glyph.height as f32 * scale) as i16;
+                            glyph.top = (glyph.top as f32 * scale) as i16 + y_offset;
+                            glyph.left = (glyph.left as f32 * scale) as i16 + x_offset;
+                            let offset_cell = RenderableCell {
+                                character: ch,
+                                point: Point::new(cell.point.line, script_column),
+                                fg: cell.fg,
+                                bg: cell.bg,
+                                bg_alpha: 0.,
+                                underline: cell.underline,
+                                flags: cell.flags & !Flags::MATH_FORMULA,
+                                extra: None,
+                            };
+                            self.add_render_item(&offset_cell, &glyph, size_info);
+                            x_offset += scaled_width;
                         }
                     },
                 }
