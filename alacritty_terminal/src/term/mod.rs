@@ -86,6 +86,34 @@ impl Default for LaTeXState {
     }
 }
 
+/// Convert ASCII letter to mathematical italic Unicode.
+///
+/// Math mode in LaTeX renders single letters as italic variables.
+/// This function maps:
+/// - Lowercase a-z → U+1D44E - U+1D467 (Mathematical Italic Small)
+/// - Uppercase A-Z → U+1D434 - U+1D44D (Mathematical Italic Capital)
+/// - Special case: 'h' → U+210E (Planck constant, in Letterlike Symbols block)
+fn to_math_italic(c: char) -> char {
+    match c {
+        'a'..='z' => {
+            if c == 'h' {
+                // 'h' is special: Planck constant at U+210E
+                '\u{210E}'
+            } else {
+                let offset = c as u32 - 'a' as u32;
+                // U+1D44E is mathematical italic small a
+                char::from_u32(0x1D44E + offset).unwrap_or(c)
+            }
+        },
+        'A'..='Z' => {
+            let offset = c as u32 - 'A' as u32;
+            // U+1D434 is mathematical italic capital A
+            char::from_u32(0x1D434 + offset).unwrap_or(c)
+        },
+        _ => c,
+    }
+}
+
 /// Convert LaTeX command to Unicode character.
 fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
     // Greek letters (lowercase)
@@ -570,7 +598,9 @@ fn parse_latex_simple(formula: &str) -> String {
                 result.push('\\');
             }
         } else {
-            result.push(c);
+            // Apply math italic to ASCII letters (a-z, A-Z).
+            // Numbers, operators, and other characters stay unchanged.
+            result.push(to_math_italic(c));
         }
     }
     result
@@ -4211,7 +4241,8 @@ mod parse_tests {
         let result = parse_latex_with_layout("x^2");
         match result {
             ParsedFormula::Superscript { base, script } => {
-                assert_eq!(base, vec!['x']);
+                // 'x' becomes math italic '𝑥' (U+1D465)
+                assert_eq!(base, vec!['𝑥']);
                 assert_eq!(script, vec!['2']);
             },
             other => panic!("Expected Superscript, got {:?}", other),
@@ -4223,7 +4254,8 @@ mod parse_tests {
         let result = parse_latex_with_layout("x_2");
         match result {
             ParsedFormula::Subscript { base, script } => {
-                assert_eq!(base, vec!['x']);
+                // 'x' becomes math italic '𝑥' (U+1D465)
+                assert_eq!(base, vec!['𝑥']);
                 assert_eq!(script, vec!['2']);
             },
             other => panic!("Expected Subscript, got {:?}", other),
@@ -4235,10 +4267,42 @@ mod parse_tests {
         let result = parse_latex_with_layout("x^{12}");
         match result {
             ParsedFormula::Superscript { base, script } => {
-                assert_eq!(base, vec!['x']);
+                // 'x' becomes math italic '𝑥' (U+1D465)
+                assert_eq!(base, vec!['𝑥']);
                 assert_eq!(script, vec!['1', '2']);
             },
             other => panic!("Expected Superscript, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_math_italic_conversion() {
+        // Test that ASCII letters are converted to math italic
+        let result = parse_latex_simple("abc");
+        assert_eq!(result, "𝑎𝑏𝑐");
+
+        // Test uppercase
+        let result = parse_latex_simple("ABC");
+        assert_eq!(result, "𝐴𝐵𝐶");
+
+        // Test mixed case
+        let result = parse_latex_simple("aA");
+        assert_eq!(result, "𝑎𝐴");
+
+        // Test that numbers stay unchanged
+        let result = parse_latex_simple("123");
+        assert_eq!(result, "123");
+
+        // Test that operators stay unchanged
+        let result = parse_latex_simple("a + b = c");
+        assert_eq!(result, "𝑎 + 𝑏 = 𝑐");
+
+        // Test special case: 'h' maps to U+210E (Planck constant)
+        let result = parse_latex_simple("h");
+        assert_eq!(result, "ℎ");
+
+        // Test full expression
+        let result = parse_latex_simple("f(x) = ax + b");
+        assert_eq!(result, "𝑓(𝑥) = 𝑎𝑥 + 𝑏");
     }
 }
