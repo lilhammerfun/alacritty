@@ -68,12 +68,27 @@ pub fn cwd(pid: c_int) -> Result<PathBuf, Error> {
     Ok(CString::from(c_str).into_string().map(PathBuf::from)?)
 }
 
+/// Get the name of a process by its PID.
+pub fn name(pid: c_int) -> Result<String, Error> {
+    let mut buffer = [0u8; sys::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let result =
+        unsafe { sys::proc_name(pid, buffer.as_mut_ptr() as *mut c_void, buffer.len() as u32) };
+
+    if result <= 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+
+    let c_str = unsafe { CStr::from_ptr(buffer.as_ptr() as *const _) };
+    Ok(c_str.to_string_lossy().into_owned())
+}
+
 /// Bindings for libproc.
 #[allow(non_camel_case_types)]
 mod sys {
     use std::os::raw::{c_char, c_int, c_longlong, c_void};
 
     pub const PROC_PIDVNODEPATHINFO: c_int = 9;
+    pub const PROC_PIDPATHINFO_MAXSIZE: u32 = 4096;
 
     type gid_t = c_int;
     type off_t = c_longlong;
@@ -143,6 +158,8 @@ mod sys {
             buffer: *mut c_void,
             buffersize: c_int,
         ) -> c_int;
+
+        pub fn proc_name(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
     }
 }
 

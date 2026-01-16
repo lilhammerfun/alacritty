@@ -1,0 +1,9 @@
+# Alacritty Math Test Environment
+
+# OSC 133
+precmd() { print -Pn "\e]133;A\a" }
+preexec() { print -Pn "\e]133;C\a" }
+
+PS1='%F{green}[math]%f %~ %# '
+
+echo "Math test ready. Try: echo '\$\\alpha + \\frac{a}{b}\$'"

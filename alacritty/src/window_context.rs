@@ -8,7 +8,7 @@ use std::mem;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use glutin::config::Config as GlutinConfig;
 use glutin::display::GetGlDisplay;
@@ -33,6 +33,8 @@ use alacritty_terminal::tty;
 use crate::cli::{ParsedOptions, WindowOptions};
 use crate::clipboard::Clipboard;
 use crate::config::UiConfig;
+#[cfg(not(windows))]
+use crate::daemon;
 use crate::display::Display;
 use crate::display::window::Window;
 use crate::event::{
@@ -67,6 +69,9 @@ pub struct WindowContext {
     shell_pid: u32,
     window_config: ParsedOptions,
     config: Rc<UiConfig>,
+    /// Last time we checked the foreground process for math rendering control.
+    #[cfg(not(windows))]
+    last_foreground_check: Instant,
 }
 
 impl WindowContext {
@@ -254,6 +259,8 @@ impl WindowContext {
             mouse: Default::default(),
             touch: Default::default(),
             dirty: Default::default(),
+            #[cfg(not(windows))]
+            last_foreground_check: Instant::now(),
         })
     }
 
@@ -456,6 +463,17 @@ impl WindowContext {
 
         for event in self.event_queue.drain(..) {
             processor.handle_event(event);
+        }
+
+        // Update foreground process for math rendering control (throttled to every 500ms).
+        #[cfg(not(windows))]
+        {
+            const FOREGROUND_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+            if self.last_foreground_check.elapsed() >= FOREGROUND_CHECK_INTERVAL {
+                self.last_foreground_check = Instant::now();
+                let process_name = daemon::foreground_process_name(self.master_fd, self.shell_pid);
+                terminal.set_foreground_process(process_name);
+            }
         }
 
         // Process DisplayUpdate events.

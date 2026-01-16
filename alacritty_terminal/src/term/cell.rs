@@ -9,6 +9,18 @@ use crate::grid::{self, GridCell};
 use crate::index::Column;
 use crate::vte::ansi::{Color, Hyperlink as VteHyperlink, NamedColor};
 
+/// Style for math characters (used for subscript/superscript rendering).
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[repr(u8)]
+pub enum MathCharStyle {
+    #[default]
+    Normal = 0,
+    Subscript = 1,
+    Superscript = 2,
+    Bold = 3,
+}
+
 /// Math layout types for complex formula rendering.
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -19,8 +31,8 @@ pub enum MathLayout {
     Superscript { base: Vec<char>, script: Vec<char> },
     /// Subscript: base_script.
     Subscript { base: Vec<char>, script: Vec<char> },
-    /// Square root: √content.
-    Sqrt { content: Vec<char> },
+    /// Square root: √content or n-th root: ⁿ√content.
+    Sqrt { index: Option<Vec<char>>, content: Vec<char> },
     /// Base with both subscript and superscript: base_{lower}^{upper}.
     /// Used for big operators like \sum_{i=1}^{n}, \int_a^b.
     SubSuperscript { base: Vec<char>, lower: Vec<char>, upper: Vec<char> },
@@ -158,6 +170,9 @@ pub struct CellExtra {
     /// Characters in a math formula (stored in the first cell of the formula).
     #[cfg_attr(feature = "serde", serde(default))]
     math_chars: Option<Vec<char>>,
+    /// Styles for math characters (parallel array to math_chars).
+    #[cfg_attr(feature = "serde", serde(default))]
+    math_styles: Option<Vec<MathCharStyle>>,
     /// Whether this cell is a spacer for a math formula.
     #[cfg_attr(feature = "serde", serde(default))]
     math_spacer: bool,
@@ -269,6 +284,21 @@ impl Cell {
     pub fn push_math_chars(&mut self, chars: Vec<char>) {
         let extra = self.extra.get_or_insert(Default::default());
         Arc::make_mut(extra).math_chars = Some(chars);
+    }
+
+    /// Math formula character styles stored in this cell.
+    #[inline]
+    pub fn math_styles(&self) -> Option<&[MathCharStyle]> {
+        self.extra.as_ref()?.math_styles.as_deref()
+    }
+
+    /// Store math formula characters with their styles.
+    #[inline]
+    pub fn push_math_chars_styled(&mut self, chars: Vec<char>, styles: Vec<MathCharStyle>) {
+        let extra = self.extra.get_or_insert(Default::default());
+        let extra = Arc::make_mut(extra);
+        extra.math_chars = Some(chars);
+        extra.math_styles = Some(styles);
     }
 
     /// Check if this cell is a math formula spacer.

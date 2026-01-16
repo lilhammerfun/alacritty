@@ -23,7 +23,7 @@ use crate::vi_mode::{ViModeCursor, ViMotion};
 use crate::vte::ansi::{
     self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
     KeyboardModesApplyBehavior, NamedColor, NamedMode, NamedPrivateMode, PrivateMode, Rgb,
-    StandardCharset,
+    SemanticZone, StandardCharset,
 };
 
 pub mod cell;
@@ -56,33 +56,38 @@ pub enum LaTeXMode {
     /// Normal text mode.
     #[default]
     Normal,
-    /// Saw a `$`, waiting to see if next char starts a formula.
+    /// Just saw `$` in Normal mode, waiting to see if next is `$` (display math).
     PendingDollar,
-    /// Inside a math formula, buffering content.
+    /// Inside inline math `$...$`.
     InMath,
-    /// Inside math, saw `$`, waiting to confirm end.
-    PendingEnd,
+    /// Inside display math `$$...$$`.
+    InDisplayMath,
+    /// In display math, saw one `$`, waiting for second `$` to end.
+    PendingDisplayEnd,
 }
 
-/// State for LaTeX formula detection using heuristic rules.
+/// State for LaTeX formula detection.
 ///
-/// Detection rules (based on Markdown/xfun):
-/// - Start `$` must not be followed by space or digit
-/// - End `$` must not be preceded by space
-/// - End `$` must not be followed by alphanumeric
+/// State machine for inline `$...$` and display `$$...$$` math.
+/// Only active in Output zones (OSC 133).
+/// Supports `\$` escape for literal dollar signs.
 #[derive(Debug, Clone)]
 pub struct LaTeXState {
     /// Current parsing mode.
     mode: LaTeXMode,
     /// Buffer for formula content.
     buffer: String,
-    /// Previous character (for checking start conditions).
-    prev_char: Option<char>,
+    /// Whether we just saw a backslash (for `\$` escape handling).
+    pending_backslash: bool,
 }
 
 impl Default for LaTeXState {
     fn default() -> Self {
-        Self { mode: LaTeXMode::Normal, buffer: String::with_capacity(64), prev_char: None }
+        Self {
+            mode: LaTeXMode::Normal,
+            buffer: String::with_capacity(64),
+            pending_backslash: false,
+        }
     }
 }
 
@@ -116,8 +121,8 @@ fn to_math_italic(c: char) -> char {
 
 /// Convert LaTeX command to Unicode character.
 fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
-    // Greek letters (lowercase)
     let result = match cmd {
+        // Greek letters (lowercase)
         "alpha" => "α",
         "beta" => "β",
         "gamma" => "γ",
@@ -134,6 +139,7 @@ fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
         "mu" => "μ",
         "nu" => "ν",
         "xi" => "ξ",
+        "omicron" => "ο",
         "pi" => "π",
         "varpi" => "ϖ",
         "rho" => "ρ",
@@ -169,6 +175,14 @@ fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
         "star" => "⋆",
         "circ" => "∘",
         "bullet" => "•",
+        "oplus" => "⊕",
+        "ominus" => "⊖",
+        "otimes" => "⊗",
+        "oslash" => "⊘",
+        "odot" => "⊙",
+        "dagger" => "†",
+        "ddagger" => "‡",
+        "amalg" => "⨿",
         // Relations
         "leq" | "le" => "≤",
         "geq" | "ge" => "≥",
@@ -181,33 +195,72 @@ fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
         "propto" => "∝",
         "ll" => "≪",
         "gg" => "≫",
+        "prec" => "≺",
+        "succ" => "≻",
+        "preceq" => "⪯",
+        "succeq" => "⪰",
+        "perp" => "⊥",
+        "parallel" => "∥",
+        "asymp" => "≍",
+        "doteq" => "≐",
         "subset" => "⊂",
         "supset" => "⊃",
         "subseteq" => "⊆",
         "supseteq" => "⊇",
+        "sqsubset" => "⊏",
+        "sqsupset" => "⊐",
+        "sqsubseteq" => "⊑",
+        "sqsupseteq" => "⊒",
         "in" => "∈",
         "notin" => "∉",
         "ni" => "∋",
+        "notni" => "∌",
         // Arrows
         "to" | "rightarrow" => "→",
-        "leftarrow" => "←",
+        "leftarrow" | "gets" => "←",
         "leftrightarrow" => "↔",
         "Rightarrow" => "⇒",
         "Leftarrow" => "⇐",
         "Leftrightarrow" => "⇔",
         "uparrow" => "↑",
         "downarrow" => "↓",
+        "Uparrow" => "⇑",
+        "Downarrow" => "⇓",
+        "updownarrow" => "↕",
+        "Updownarrow" => "⇕",
         "mapsto" => "↦",
+        "longmapsto" => "⟼",
+        "longrightarrow" => "⟶",
+        "longleftarrow" => "⟵",
+        "longleftrightarrow" => "⟷",
+        "Longrightarrow" => "⟹",
+        "Longleftarrow" => "⟸",
+        "Longleftrightarrow" => "⟺",
+        "hookrightarrow" => "↪",
+        "hookleftarrow" => "↩",
+        "nearrow" => "↗",
+        "searrow" => "↘",
+        "swarrow" => "↙",
+        "nwarrow" => "↖",
+        "rightharpoonup" => "⇀",
+        "rightharpoondown" => "⇁",
+        "leftharpoonup" => "↼",
+        "leftharpoondown" => "↽",
         // Big operators
         "sum" => "∑",
         "prod" => "∏",
         "coprod" => "∐",
         "int" => "∫",
+        "iint" => "∬",
+        "iiint" => "∭",
         "oint" => "∮",
         "bigcup" => "⋃",
         "bigcap" => "⋂",
         "bigoplus" => "⨁",
         "bigotimes" => "⨂",
+        "bigsqcup" => "⨆",
+        "bigwedge" => "⋀",
+        "bigvee" => "⋁",
         // Misc symbols
         "infty" => "∞",
         "partial" => "∂",
@@ -227,44 +280,134 @@ fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
         "top" => "⊤",
         "bot" => "⊥",
         "angle" => "∠",
+        "measuredangle" => "∡",
+        "sphericalangle" => "∢",
         "triangle" => "△",
+        "triangledown" => "▽",
+        "triangleleft" => "◁",
+        "triangleright" => "▷",
         "diamond" => "◇",
         "square" => "□",
+        "blacksquare" => "■",
+        "lozenge" => "◊",
         "langle" => "⟨",
         "rangle" => "⟩",
         "lceil" => "⌈",
         "rceil" => "⌉",
         "lfloor" => "⌊",
         "rfloor" => "⌋",
+        "lvert" => "|",
+        "rvert" => "|",
+        "lVert" => "‖",
+        "rVert" => "‖",
         "prime" => "′",
+        "backprime" => "‵",
         "ldots" | "dots" => "…",
         "cdots" => "⋯",
         "vdots" => "⋮",
         "ddots" => "⋱",
+        "therefore" => "∴",
+        "because" => "∵",
+        "degree" => "°",
         "hbar" => "ℏ",
         "ell" => "ℓ",
         "Re" => "ℜ",
         "Im" => "ℑ",
         "aleph" => "ℵ",
+        "beth" => "ℶ",
+        "gimel" => "ℷ",
+        "daleth" => "ℸ",
         "wp" => "℘",
+        "complement" => "∁",
+        // Blackboard bold (double-struck)
+        "mathbb{N}" | "N" if cmd == "mathbb{N}" => "ℕ",
+        "mathbb{Z}" | "Z" if cmd == "mathbb{Z}" => "ℤ",
+        "mathbb{Q}" | "Q" if cmd == "mathbb{Q}" => "ℚ",
+        "mathbb{R}" | "R" if cmd == "mathbb{R}" => "ℝ",
+        "mathbb{C}" | "C" if cmd == "mathbb{C}" => "ℂ",
+        // Common function names (rendered upright)
+        "sin" => "sin",
+        "cos" => "cos",
+        "tan" => "tan",
+        "cot" => "cot",
+        "sec" => "sec",
+        "csc" => "csc",
+        "arcsin" => "arcsin",
+        "arccos" => "arccos",
+        "arctan" => "arctan",
+        "sinh" => "sinh",
+        "cosh" => "cosh",
+        "tanh" => "tanh",
+        "log" => "log",
+        "ln" => "ln",
+        "lg" => "lg",
+        "exp" => "exp",
+        "lim" => "lim",
+        "limsup" => "lim sup",
+        "liminf" => "lim inf",
+        "sup" => "sup",
+        "inf" => "inf",
+        "max" => "max",
+        "min" => "min",
+        "arg" => "arg",
+        "det" => "det",
+        "dim" => "dim",
+        "ker" => "ker",
+        "hom" => "hom",
+        "deg" => "deg",
+        "gcd" => "gcd",
+        "lcm" => "lcm",
+        "mod" => "mod",
+        "Pr" => "Pr",
         _ => return None,
     };
     Some(result)
 }
 
+/// Text style for styled spans.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextStyle {
+    Normal,
+    Subscript,
+    Superscript,
+    Bold,
+}
+
+/// A span of text with a specific style.
+#[derive(Debug, Clone)]
+pub struct StyledSpan {
+    pub chars: Vec<char>,
+    pub style: TextStyle,
+}
+
+impl StyledSpan {
+    fn normal(chars: Vec<char>) -> Self {
+        Self { chars, style: TextStyle::Normal }
+    }
+    fn subscript(chars: Vec<char>) -> Self {
+        Self { chars, style: TextStyle::Subscript }
+    }
+    fn superscript(chars: Vec<char>) -> Self {
+        Self { chars, style: TextStyle::Superscript }
+    }
+    fn bold(chars: Vec<char>) -> Self {
+        Self { chars, style: TextStyle::Bold }
+    }
+}
+
 /// Result of parsing a LaTeX formula.
 #[derive(Debug)]
 enum ParsedFormula {
-    /// Simple formula converted to Unicode string.
-    Simple(String),
+    /// Simple formula with styled spans.
+    Simple(Vec<StyledSpan>),
     /// Fraction with numerator and denominator.
     Fraction { numerator: Vec<char>, denominator: Vec<char> },
     /// Superscript: base^{script}.
     Superscript { base: Vec<char>, script: Vec<char> },
     /// Subscript: base_{script}.
     Subscript { base: Vec<char>, script: Vec<char> },
-    /// Square root: \sqrt{content}.
-    Sqrt { content: Vec<char> },
+    /// Square root: \sqrt{content} or n-th root: \sqrt[n]{content}.
+    Sqrt { index: Option<Vec<char>>, content: Vec<char> },
     /// Base with both subscript and superscript: base_{lower}^{upper} or base^{upper}_{lower}.
     /// Used for big operators like \sum_{i=1}^{n}, \int_a^b, etc.
     SubSuperscript { base: Vec<char>, lower: Vec<char>, upper: Vec<char> },
@@ -318,19 +461,50 @@ fn try_parse_fraction(formula: &str) -> Option<(String, String)> {
     Some((numerator, denominator))
 }
 
-/// Try to parse a sqrt pattern like \sqrt{content}.
-fn try_parse_sqrt(formula: &str) -> Option<String> {
+/// Try to parse a sqrt pattern like \sqrt{content} or \sqrt[n]{content}.
+fn try_parse_sqrt(formula: &str) -> Option<(Option<String>, String)> {
     let formula = formula.trim();
-    if !formula.starts_with("\\sqrt{") {
+    if !formula.starts_with("\\sqrt") {
         return None;
     }
 
-    // Find the matching closing brace.
+    let after_sqrt = &formula[5..]; // Skip "\sqrt"
+
+    // Check for optional index [n].
+    let (index, rest) = if after_sqrt.starts_with('[') {
+        // Find matching ]
+        let mut depth = 0;
+        let mut index_end = None;
+        for (i, c) in after_sqrt.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        index_end = Some(i);
+                        break;
+                    }
+                },
+                _ => {},
+            }
+        }
+        let index_end = index_end?;
+        let index = after_sqrt[1..index_end].to_string();
+        (Some(index), &after_sqrt[index_end + 1..])
+    } else {
+        (None, after_sqrt)
+    };
+
+    // Now parse {content}.
+    if !rest.starts_with('{') {
+        return None;
+    }
+
     let mut depth = 0;
     let mut content_start = None;
     let mut content_end = None;
 
-    for (i, c) in formula.char_indices() {
+    for (i, c) in rest.char_indices() {
         match c {
             '{' => {
                 depth += 1;
@@ -351,12 +525,18 @@ fn try_parse_sqrt(formula: &str) -> Option<String> {
 
     let content_start = content_start?;
     let content_end = content_end?;
-    Some(formula[content_start..content_end].to_string())
+    Some((index, rest[content_start..content_end].to_string()))
 }
 
 /// Try to parse superscript pattern like x^{script} or x^2.
 fn try_parse_superscript(formula: &str) -> Option<(String, String)> {
     let formula = formula.trim();
+
+    // Don't match complex formulas with spaces or equals signs.
+    if formula.contains(' ') || formula.contains('=') {
+        return None;
+    }
+
     let caret_pos = formula.find('^')?;
 
     // Base is everything before ^.
@@ -398,6 +578,13 @@ fn try_parse_superscript(formula: &str) -> Option<(String, String)> {
 /// Try to parse subscript pattern like x_{script} or x_2.
 fn try_parse_subscript(formula: &str) -> Option<(String, String)> {
     let formula = formula.trim();
+
+    // Don't match complex formulas with spaces or equals signs.
+    // These should be handled by parse_latex_to_chars.
+    if formula.contains(' ') || formula.contains('=') {
+        return None;
+    }
+
     let underscore_pos = formula.find('_')?;
 
     // Base is everything before _.
@@ -440,6 +627,11 @@ fn try_parse_subscript(formula: &str) -> Option<(String, String)> {
 /// Used for big operators like \sum_{i=1}^{n}, \int_a^b, etc.
 fn try_parse_sub_superscript(formula: &str) -> Option<(String, String, String)> {
     let formula = formula.trim();
+
+    // Don't match complex formulas with spaces or equals signs.
+    if formula.contains(' ') || formula.contains('=') {
+        return None;
+    }
 
     // Find positions of _ and ^.
     let underscore_pos = formula.find('_');
@@ -521,61 +713,116 @@ fn parse_script_content(s: &str) -> Option<(String, usize)> {
 fn parse_latex_with_layout(formula: &str) -> ParsedFormula {
     // Try to parse as a fraction first.
     if let Some((num, denom)) = try_parse_fraction(formula) {
-        let num_parsed = parse_latex_simple(&num);
-        let denom_parsed = parse_latex_simple(&denom);
         return ParsedFormula::Fraction {
-            numerator: num_parsed.chars().collect(),
-            denominator: denom_parsed.chars().collect(),
+            numerator: parse_latex_to_chars(&num),
+            denominator: parse_latex_to_chars(&denom),
         };
     }
 
-    // Try to parse as sqrt.
-    if let Some(content) = try_parse_sqrt(formula) {
-        let content_parsed = parse_latex_simple(&content);
-        return ParsedFormula::Sqrt { content: content_parsed.chars().collect() };
+    // Try to parse as sqrt (with optional index for n-th root).
+    if let Some((index, content)) = try_parse_sqrt(formula) {
+        return ParsedFormula::Sqrt {
+            index: index.map(|i| parse_latex_to_chars(&i)),
+            content: parse_latex_to_chars(&content),
+        };
     }
 
     // Try to parse as sub+superscript (must check before individual sub/super).
     // Used for big operators like \sum_{i=1}^{n}, \int_a^b.
     if let Some((base, lower, upper)) = try_parse_sub_superscript(formula) {
-        let base_parsed = parse_latex_simple(&base);
-        let lower_parsed = parse_latex_simple(&lower);
-        let upper_parsed = parse_latex_simple(&upper);
         return ParsedFormula::SubSuperscript {
-            base: base_parsed.chars().collect(),
-            lower: lower_parsed.chars().collect(),
-            upper: upper_parsed.chars().collect(),
+            base: parse_latex_to_chars(&base),
+            lower: parse_latex_to_chars(&lower),
+            upper: parse_latex_to_chars(&upper),
         };
     }
 
     // Try to parse as superscript.
     if let Some((base, script)) = try_parse_superscript(formula) {
-        let base_parsed = parse_latex_simple(&base);
-        let script_parsed = parse_latex_simple(&script);
         return ParsedFormula::Superscript {
-            base: base_parsed.chars().collect(),
-            script: script_parsed.chars().collect(),
+            base: parse_latex_to_chars(&base),
+            script: parse_latex_to_chars(&script),
         };
     }
 
     // Try to parse as subscript.
     if let Some((base, script)) = try_parse_subscript(formula) {
-        let base_parsed = parse_latex_simple(&base);
-        let script_parsed = parse_latex_simple(&script);
         return ParsedFormula::Subscript {
-            base: base_parsed.chars().collect(),
-            script: script_parsed.chars().collect(),
+            base: parse_latex_to_chars(&base),
+            script: parse_latex_to_chars(&script),
         };
     }
 
-    // Otherwise, parse as simple formula.
-    ParsedFormula::Simple(parse_latex_simple(formula))
+    // Otherwise, parse as styled simple formula.
+    ParsedFormula::Simple(parse_latex_styled(formula))
 }
 
-/// Parse simple LaTeX formula and convert to Unicode string (no layout).
-fn parse_latex_simple(formula: &str) -> String {
-    let mut result = String::new();
+/// Get the combining character for a math accent command.
+fn accent_to_combining(cmd: &str) -> Option<char> {
+    match cmd {
+        "hat" => Some('\u{0302}'),              // COMBINING CIRCUMFLEX ACCENT (x̂)
+        "bar" | "overline" => Some('\u{0304}'), // COMBINING MACRON (x̄)
+        "vec" => Some('\u{20D7}'),              // COMBINING RIGHT ARROW ABOVE (x⃗)
+        "dot" => Some('\u{0307}'),              // COMBINING DOT ABOVE (ẋ)
+        "ddot" => Some('\u{0308}'),             // COMBINING DIAERESIS (ẍ)
+        "tilde" => Some('\u{0303}'),            // COMBINING TILDE (x̃)
+        "check" => Some('\u{030C}'),            // COMBINING CARON (x̌)
+        "acute" => Some('\u{0301}'),            // COMBINING ACUTE ACCENT (x́)
+        "grave" => Some('\u{0300}'),            // COMBINING GRAVE ACCENT (x̀)
+        "breve" => Some('\u{0306}'),            // COMBINING BREVE (x̆)
+        _ => None,
+    }
+}
+
+/// Helper to parse a braced argument from char iterator.
+fn parse_braced_arg(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    if chars.peek() != Some(&'{') {
+        return String::new();
+    }
+    chars.next(); // consume '{'
+    let mut arg = String::new();
+    let mut depth = 1;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' => {
+                depth += 1;
+                arg.push(ch);
+            },
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                arg.push(ch);
+            },
+            _ => arg.push(ch),
+        }
+    }
+    arg
+}
+
+/// Convert styled spans to a flat Vec<char> (for use in layouts that don't need style info).
+fn spans_to_chars(spans: &[StyledSpan]) -> Vec<char> {
+    spans.iter().flat_map(|s| s.chars.iter().copied()).collect()
+}
+
+/// Parse LaTeX formula into a flat Vec<char> (legacy interface for layouts).
+fn parse_latex_to_chars(formula: &str) -> Vec<char> {
+    spans_to_chars(&parse_latex_styled(formula))
+}
+
+/// Parse LaTeX formula into styled spans for rendering.
+fn parse_latex_styled(formula: &str) -> Vec<StyledSpan> {
+    let mut spans: Vec<StyledSpan> = Vec::new();
+    let mut current = Vec::new();
     let mut chars = formula.chars().peekable();
+
+    // Helper to flush current chars as Normal span.
+    let flush_normal = |spans: &mut Vec<StyledSpan>, current: &mut Vec<char>| {
+        if !current.is_empty() {
+            spans.push(StyledSpan::normal(std::mem::take(current)));
+        }
+    };
 
     while let Some(c) = chars.next() {
         if c == '\\' {
@@ -587,23 +834,183 @@ fn parse_latex_simple(formula: &str) -> String {
                     break;
                 }
             }
+
+            // Handle \frac{num}{denom} inline as num/denom.
+            if cmd == "frac" {
+                let num = parse_braced_arg(&mut chars);
+                let denom = parse_braced_arg(&mut chars);
+                if !num.is_empty() && !denom.is_empty() {
+                    // Recursively parse and flatten into current span.
+                    for span in parse_latex_styled(&num) {
+                        flush_normal(&mut spans, &mut current);
+                        spans.push(span);
+                    }
+                    current.push('/');
+                    for span in parse_latex_styled(&denom) {
+                        flush_normal(&mut spans, &mut current);
+                        spans.push(span);
+                    }
+                }
+                continue;
+            }
+
+            // Handle \sqrt{content} or \sqrt[n]{content}.
+            if cmd == "sqrt" {
+                let index = if chars.peek() == Some(&'[') {
+                    chars.next();
+                    let mut idx = String::new();
+                    while let Some(&ch) = chars.peek() {
+                        if ch == ']' {
+                            chars.next();
+                            break;
+                        }
+                        idx.push(chars.next().unwrap());
+                    }
+                    Some(idx)
+                } else {
+                    None
+                };
+                let content = parse_braced_arg(&mut chars);
+                if !content.is_empty() {
+                    if let Some(idx) = index {
+                        // n-th root index as superscript.
+                        flush_normal(&mut spans, &mut current);
+                        let idx_chars: Vec<char> = idx.chars().map(to_math_italic).collect();
+                        spans.push(StyledSpan::superscript(idx_chars));
+                    }
+                    current.push('√');
+                    current.push('(');
+                    for span in parse_latex_styled(&content) {
+                        flush_normal(&mut spans, &mut current);
+                        spans.push(span);
+                    }
+                    current.push(')');
+                }
+                continue;
+            }
+
+            // Check if this is a font/format command.
+            if matches!(cmd.as_str(), "mathbf" | "boldsymbol" | "bm" | "textbf") {
+                let arg = parse_braced_arg(&mut chars);
+                if !arg.is_empty() {
+                    flush_normal(&mut spans, &mut current);
+                    let bold_chars: Vec<char> = arg.chars().map(to_math_bold).collect();
+                    spans.push(StyledSpan::bold(bold_chars));
+                }
+                continue;
+            }
+            if matches!(cmd.as_str(), "mathit" | "textit" | "emph") {
+                let arg = parse_braced_arg(&mut chars);
+                if !arg.is_empty() {
+                    for ch in arg.chars() {
+                        current.push(to_math_italic(ch));
+                    }
+                }
+                continue;
+            }
+            if matches!(cmd.as_str(), "mathrm" | "text" | "textrm" | "mathsf" | "mathtt") {
+                let arg = parse_braced_arg(&mut chars);
+                for ch in arg.chars() {
+                    current.push(ch); // roman: no change
+                }
+                continue;
+            }
+
+            // Check if this is an accent command.
+            if let Some(combining) = accent_to_combining(&cmd) {
+                let arg = parse_braced_arg(&mut chars);
+                if !arg.is_empty() {
+                    for ch in arg.chars() {
+                        current.push(to_math_italic(ch));
+                        if ch.is_alphabetic() {
+                            current.push(combining);
+                        }
+                    }
+                } else if let Some(&ch) = chars.peek() {
+                    chars.next();
+                    current.push(to_math_italic(ch));
+                    current.push(combining);
+                }
+                continue;
+            }
+
+            // Check if this is a known LaTeX command.
             if let Some(unicode) = latex_to_unicode(&cmd) {
-                result.push_str(unicode);
+                for ch in unicode.chars() {
+                    current.push(ch);
+                }
             } else if !cmd.is_empty() {
-                result.push('\\');
-                result.push_str(&cmd);
+                current.push('\\');
+                for ch in cmd.chars() {
+                    current.push(ch);
+                }
             } else if let Some(escaped) = chars.next() {
-                result.push(escaped);
+                current.push(escaped);
             } else {
-                result.push('\\');
+                current.push('\\');
+            }
+        } else if c == '_' {
+            // Handle subscript: _x or _{content}
+            flush_normal(&mut spans, &mut current);
+            let arg = if chars.peek() == Some(&'{') {
+                parse_braced_arg(&mut chars)
+            } else if let Some(&ch) = chars.peek() {
+                chars.next();
+                ch.to_string()
+            } else {
+                String::new()
+            };
+            if !arg.is_empty() {
+                // Recursively parse subscript content.
+                let sub_spans = parse_latex_styled(&arg);
+                // Flatten all sub-spans into a single subscript span.
+                let mut sub_chars = Vec::new();
+                for span in sub_spans {
+                    sub_chars.extend(span.chars);
+                }
+                spans.push(StyledSpan::subscript(sub_chars));
+            }
+        } else if c == '^' {
+            // Handle superscript: ^x or ^{content}
+            flush_normal(&mut spans, &mut current);
+            let arg = if chars.peek() == Some(&'{') {
+                parse_braced_arg(&mut chars)
+            } else if let Some(&ch) = chars.peek() {
+                chars.next();
+                ch.to_string()
+            } else {
+                String::new()
+            };
+            if !arg.is_empty() {
+                let sup_spans = parse_latex_styled(&arg);
+                let mut sup_chars = Vec::new();
+                for span in sup_spans {
+                    sup_chars.extend(span.chars);
+                }
+                spans.push(StyledSpan::superscript(sup_chars));
             }
         } else {
-            // Apply math italic to ASCII letters (a-z, A-Z).
-            // Numbers, operators, and other characters stay unchanged.
-            result.push(to_math_italic(c));
+            // Apply math italic to ASCII letters.
+            current.push(to_math_italic(c));
         }
     }
-    result
+
+    // Flush remaining.
+    flush_normal(&mut spans, &mut current);
+    spans
+}
+
+/// Convert a character to Mathematical Bold Unicode.
+fn to_math_bold(c: char) -> char {
+    match c {
+        // Mathematical Bold Capital: U+1D400 - U+1D419
+        'A'..='Z' => char::from_u32(0x1D400 + (c as u32 - 'A' as u32)).unwrap_or(c),
+        // Mathematical Bold Small: U+1D41A - U+1D433
+        'a'..='z' => char::from_u32(0x1D41A + (c as u32 - 'a' as u32)).unwrap_or(c),
+        // Mathematical Bold Digit: U+1D7CE - U+1D7D7
+        '0'..='9' => char::from_u32(0x1D7CE + (c as u32 - '0' as u32)).unwrap_or(c),
+        _ => c,
+    }
 }
 
 bitflags! {
@@ -886,6 +1293,15 @@ pub struct Term<T> {
 
     /// State for LaTeX formula detection.
     latex_state: LaTeXState,
+
+    /// Current foreground process name (for math rendering control).
+    foreground_process: Option<String>,
+
+    /// Whether math rendering is currently enabled based on foreground process.
+    math_rendering_active: bool,
+
+    /// Current semantic zone for shell integration (OSC 133).
+    semantic_zone: SemanticZone,
 }
 
 /// Configuration options for the [`Term`].
@@ -910,6 +1326,12 @@ pub struct Config {
 
     /// OSC52 support mode.
     pub osc52: Osc52,
+
+    /// Whether math formula rendering is enabled globally.
+    pub math_enabled: bool,
+
+    /// List of program names that enable math rendering.
+    pub math_enabled_programs: Vec<String>,
 }
 
 impl Default for Config {
@@ -921,6 +1343,8 @@ impl Default for Config {
             vi_mode_cursor_style: Default::default(),
             kitty_keyboard: Default::default(),
             osc52: Default::default(),
+            math_enabled: true,
+            math_enabled_programs: Vec::new(),
         }
     }
 }
@@ -981,6 +1405,9 @@ impl<T> Term<T> {
         // Initialize terminal damage, covering the entire terminal upon launch.
         let damage = TermDamageState::new(num_cols, num_lines);
 
+        // Math rendering starts inactive until we're in an Output zone.
+        let math_rendering_active = config.math_enabled && config.math_enabled_programs.is_empty();
+
         Term {
             inactive_grid,
             scroll_region,
@@ -1001,7 +1428,33 @@ impl<T> Term<T> {
             title: Default::default(),
             mode: Default::default(),
             latex_state: Default::default(),
+            foreground_process: None,
+            math_rendering_active,
+            semantic_zone: SemanticZone::default(),
         }
+    }
+
+    /// Update the foreground process name and recalculate math rendering state.
+    pub fn set_foreground_process(&mut self, process_name: Option<String>) {
+        self.foreground_process = process_name;
+        self.update_math_rendering_state();
+    }
+
+    /// Recalculate whether math rendering should be active.
+    fn update_math_rendering_state(&mut self) {
+        if !self.config.math_enabled {
+            self.math_rendering_active = false;
+            return;
+        }
+
+        if self.config.math_enabled_programs.is_empty() {
+            self.math_rendering_active = true;
+            return;
+        }
+
+        self.math_rendering_active = self.foreground_process.as_ref().map_or(false, |name| {
+            self.config.math_enabled_programs.iter().any(|prog| name.contains(prog))
+        });
     }
 
     /// Collect the information about the changes in the lines, which
@@ -1599,21 +2052,33 @@ impl<T> Term<T> {
     }
 
     /// Flush any pending LaTeX state.
-    /// For PendingEnd state (formula complete), parse and render the formula.
-    /// For other states, output buffered content as-is.
+    /// If in InMath mode, output buffered content as-is (incomplete formula).
     fn flush_pending_latex(&mut self)
     where
         T: EventListener,
     {
+        // Flush any pending backslash first.
+        if self.latex_state.pending_backslash {
+            self.latex_state.pending_backslash = false;
+            match self.latex_state.mode {
+                LaTeXMode::InMath | LaTeXMode::InDisplayMath | LaTeXMode::PendingDisplayEnd => {
+                    self.latex_state.buffer.push('\\');
+                },
+                _ => {
+                    self.input_char_internal('\\');
+                },
+            }
+        }
+
         match self.latex_state.mode {
             LaTeXMode::Normal => {},
             LaTeXMode::PendingDollar => {
-                // Output the pending $
+                // We saw `$` but nothing after, output it as-is.
                 self.input_char_internal('$');
                 self.latex_state.mode = LaTeXMode::Normal;
             },
             LaTeXMode::InMath => {
-                // Incomplete formula, output $ and buffered content as-is
+                // Incomplete inline formula, output `$` + buffer as-is.
                 self.input_char_internal('$');
                 let buffer = mem::take(&mut self.latex_state.buffer);
                 for c in buffer.chars() {
@@ -1621,130 +2086,147 @@ impl<T> Term<T> {
                 }
                 self.latex_state.mode = LaTeXMode::Normal;
             },
-            LaTeXMode::PendingEnd => {
-                // Formula is complete (saw closing $), parse and render with GPU.
-                let formula = mem::take(&mut self.latex_state.buffer);
-                // Original width = buffer length + 2 (for the two $ signs).
-                let original_width = formula.len() + 2;
-                let parsed = parse_latex_with_layout(&formula);
-
-                // Helper to get written point after input_char_internal.
-                let get_written_point = |term: &Self| {
-                    if term.grid.cursor.input_needs_wrap {
-                        Point::new(term.grid.cursor.point.line, Column(term.columns() - 1))
-                    } else {
-                        Point::new(
-                            term.grid.cursor.point.line,
-                            Column(term.grid.cursor.point.column.0.saturating_sub(1)),
-                        )
-                    }
-                };
-
-                // Helper to output spacer cells.
-                let output_spacers = |term: &mut Self, count: usize| {
-                    for _ in 0..count {
-                        term.input_char_internal(' ');
-                        let spacer_point = get_written_point(term);
-                        term.grid[spacer_point].set_math_spacer();
-                    }
-                };
-
-                match parsed {
-                    ParsedFormula::Fraction { numerator, denominator } => {
-                        // Write fraction line character.
-                        self.input_char_internal('─');
-                        let written_point = get_written_point(self);
-                        self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                        self.grid[written_point]
-                            .set_math_layout(cell::MathLayout::Fraction { numerator, denominator });
-                        output_spacers(self, original_width - 1);
-                    },
-                    ParsedFormula::Superscript { base, script } => {
-                        // Write the first base character.
-                        let first_char = base.first().copied().unwrap_or(' ');
-                        self.input_char_internal(first_char);
-                        let written_point = get_written_point(self);
-                        self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                        self.grid[written_point]
-                            .set_math_layout(cell::MathLayout::Superscript { base, script });
-                        output_spacers(self, original_width - 1);
-                    },
-                    ParsedFormula::Subscript { base, script } => {
-                        // Write the first base character.
-                        let first_char = base.first().copied().unwrap_or(' ');
-                        self.input_char_internal(first_char);
-                        let written_point = get_written_point(self);
-                        self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                        self.grid[written_point]
-                            .set_math_layout(cell::MathLayout::Subscript { base, script });
-                        output_spacers(self, original_width - 1);
-                    },
-                    ParsedFormula::Sqrt { content } => {
-                        // Write the sqrt symbol.
-                        self.input_char_internal('√');
-                        let written_point = get_written_point(self);
-                        self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                        self.grid[written_point]
-                            .set_math_layout(cell::MathLayout::Sqrt { content });
-                        output_spacers(self, original_width - 1);
-                    },
-                    ParsedFormula::SubSuperscript { base, lower, upper } => {
-                        // Write the first base character (e.g., ∑ for \sum).
-                        let first_char = base.first().copied().unwrap_or(' ');
-                        self.input_char_internal(first_char);
-                        let written_point = get_written_point(self);
-                        self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                        self.grid[written_point].set_math_layout(
-                            cell::MathLayout::SubSuperscript { base, lower, upper },
-                        );
-                        output_spacers(self, original_width - 1);
-                    },
-                    ParsedFormula::Simple(result) => {
-                        let chars: Vec<char> = result.chars().collect();
-
-                        if !chars.is_empty() {
-                            // 1. Write the first character.
-                            let first_char = chars[0];
-                            self.input_char_internal(first_char);
-
-                            // 2. Get the cell and mark it as formula start.
-                            let written_point = if self.grid.cursor.input_needs_wrap {
-                                Point::new(self.grid.cursor.point.line, Column(self.columns() - 1))
-                            } else {
-                                Point::new(
-                                    self.grid.cursor.point.line,
-                                    Column(self.grid.cursor.point.column.0.saturating_sub(1)),
-                                )
-                            };
-                            self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-
-                            // 3. Store remaining characters in the first cell.
-                            if chars.len() > 1 {
-                                self.grid[written_point].push_math_chars(chars[1..].to_vec());
-                            }
-
-                            // 4. Output spacer cells to match original input width.
-                            for _ in 1..original_width {
-                                self.input_char_internal(' ');
-                                let spacer_point = if self.grid.cursor.input_needs_wrap {
-                                    Point::new(
-                                        self.grid.cursor.point.line,
-                                        Column(self.columns() - 1),
-                                    )
-                                } else {
-                                    Point::new(
-                                        self.grid.cursor.point.line,
-                                        Column(self.grid.cursor.point.column.0.saturating_sub(1)),
-                                    )
-                                };
-                                self.grid[spacer_point].set_math_spacer();
-                            }
-                        }
-                    },
+            LaTeXMode::InDisplayMath => {
+                // Incomplete display formula, output `$$` + buffer as-is.
+                self.input_char_internal('$');
+                self.input_char_internal('$');
+                let buffer = mem::take(&mut self.latex_state.buffer);
+                for c in buffer.chars() {
+                    self.input_char_internal(c);
                 }
                 self.latex_state.mode = LaTeXMode::Normal;
             },
+            LaTeXMode::PendingDisplayEnd => {
+                // Incomplete display formula with one closing `$`, output `$$` + buffer + `$`.
+                self.input_char_internal('$');
+                self.input_char_internal('$');
+                let buffer = mem::take(&mut self.latex_state.buffer);
+                for c in buffer.chars() {
+                    self.input_char_internal(c);
+                }
+                self.input_char_internal('$');
+                self.latex_state.mode = LaTeXMode::Normal;
+            },
         }
+    }
+
+    /// Render a completed LaTeX formula to the terminal grid.
+    fn render_latex_formula(&mut self, formula: String, original_width: usize)
+    where
+        T: EventListener,
+    {
+        let parsed = parse_latex_with_layout(&formula);
+
+        // Helper to get written point after input_char_internal.
+        let get_written_point = |term: &Self| {
+            if term.grid.cursor.input_needs_wrap {
+                Point::new(term.grid.cursor.point.line, Column(term.columns() - 1))
+            } else {
+                Point::new(
+                    term.grid.cursor.point.line,
+                    Column(term.grid.cursor.point.column.0.saturating_sub(1)),
+                )
+            }
+        };
+
+        // Helper to output spacer cells.
+        let output_spacers = |term: &mut Self, count: usize| {
+            for _ in 0..count {
+                term.input_char_internal(' ');
+                let spacer_point = get_written_point(term);
+                term.grid[spacer_point].set_math_spacer();
+            }
+        };
+
+        match parsed {
+            ParsedFormula::Fraction { numerator, denominator } => {
+                // Write fraction line character.
+                self.input_char_internal('─');
+                let written_point = get_written_point(self);
+                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+                self.grid[written_point]
+                    .set_math_layout(cell::MathLayout::Fraction { numerator, denominator });
+                output_spacers(self, original_width - 1);
+            },
+            ParsedFormula::Superscript { base, script } => {
+                // Write the first base character.
+                let first_char = base.first().copied().unwrap_or(' ');
+                self.input_char_internal(first_char);
+                let written_point = get_written_point(self);
+                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+                self.grid[written_point]
+                    .set_math_layout(cell::MathLayout::Superscript { base, script });
+                output_spacers(self, original_width - 1);
+            },
+            ParsedFormula::Subscript { base, script } => {
+                // Write the first base character.
+                let first_char = base.first().copied().unwrap_or(' ');
+                self.input_char_internal(first_char);
+                let written_point = get_written_point(self);
+                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+                self.grid[written_point]
+                    .set_math_layout(cell::MathLayout::Subscript { base, script });
+                output_spacers(self, original_width - 1);
+            },
+            ParsedFormula::Sqrt { index, content } => {
+                // Write the sqrt symbol.
+                self.input_char_internal('√');
+                let written_point = get_written_point(self);
+                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+                self.grid[written_point].set_math_layout(cell::MathLayout::Sqrt { index, content });
+                output_spacers(self, original_width - 1);
+            },
+            ParsedFormula::SubSuperscript { base, lower, upper } => {
+                // Write the first base character (e.g., ∑ for \sum).
+                let first_char = base.first().copied().unwrap_or(' ');
+                self.input_char_internal(first_char);
+                let written_point = get_written_point(self);
+                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+                self.grid[written_point].set_math_layout(cell::MathLayout::SubSuperscript {
+                    base,
+                    lower,
+                    upper,
+                });
+                output_spacers(self, original_width - 1);
+            },
+            ParsedFormula::Simple(spans) => {
+                // Flatten spans to chars and styles.
+                let mut chars = Vec::new();
+                let mut styles = Vec::new();
+                for span in spans {
+                    let style = match span.style {
+                        TextStyle::Normal => cell::MathCharStyle::Normal,
+                        TextStyle::Subscript => cell::MathCharStyle::Subscript,
+                        TextStyle::Superscript => cell::MathCharStyle::Superscript,
+                        TextStyle::Bold => cell::MathCharStyle::Bold,
+                    };
+                    for &ch in &span.chars {
+                        chars.push(ch);
+                        styles.push(style);
+                    }
+                }
+
+                if !chars.is_empty() {
+                    // 1. Write the first character.
+                    let first_char = chars[0];
+                    self.input_char_internal(first_char);
+
+                    // 2. Get the cell and mark it as formula start.
+                    let written_point = get_written_point(self);
+                    self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+
+                    // 3. Store remaining characters and styles in the first cell.
+                    if chars.len() > 1 {
+                        self.grid[written_point]
+                            .push_math_chars_styled(chars[1..].to_vec(), styles[1..].to_vec());
+                    }
+
+                    // 4. Output spacer cells to match original input width.
+                    output_spacers(self, original_width - 1);
+                }
+            },
+        }
+        self.latex_state.mode = LaTeXMode::Normal;
     }
 
     /// Internal method to write a character to the terminal.
@@ -1851,200 +2333,182 @@ impl<T> Dimensions for Term<T> {
 impl<T: EventListener> Handler for Term<T> {
     /// A character to be displayed.
     ///
-    /// This method implements LaTeX formula detection using heuristic rules:
-    /// - Start `$` must not be followed by space or digit
-    /// - End `$` must not be preceded by space
-    /// - End `$` must not be followed by alphanumeric
+    /// LaTeX formula detection in Output zones (OSC 133):
+    /// - Inline math: `$...$`
+    /// - Display math: `$$...$$`
+    /// - Escape: `\$` for literal dollar sign
+    ///
+    /// No heuristics - users must configure shell integration to use this feature.
     #[inline(never)]
     fn input(&mut self, c: char) {
+        // Skip LaTeX processing if math rendering is not active.
+        if !self.math_rendering_active {
+            self.input_char_internal(c);
+            return;
+        }
+
+        // Only process LaTeX in Output regions (OSC 133 shell integration).
+        // Users who want LaTeX rendering must configure their shell to send OSC 133.
+        if self.semantic_zone != SemanticZone::Output {
+            self.input_char_internal(c);
+            return;
+        }
+
         match self.latex_state.mode {
             LaTeXMode::Normal => {
-                if c == '$' {
-                    // Check if this could be start of formula.
-                    // Start $ should NOT be preceded by alphanumeric (which would make it a shell
-                    // variable like $PATH). Most punctuation and whitespace are valid formula starts.
-                    let prev = self.latex_state.prev_char;
-                    let valid_start = prev.is_none() || !prev.unwrap().is_alphanumeric();
-
-                    if valid_start {
-                        // Could be start of formula, wait for next char
-                        self.latex_state.mode = LaTeXMode::PendingDollar;
-                        self.latex_state.prev_char = Some(c);
-                        return;
+                if self.latex_state.pending_backslash {
+                    self.latex_state.pending_backslash = false;
+                    if c == '$' {
+                        // `\$` escape: output literal `$`, don't start math mode.
+                        self.input_char_internal('$');
+                    } else {
+                        // Not an escape: output the backslash, then process char.
+                        self.input_char_internal('\\');
+                        if c == '\\' {
+                            self.latex_state.pending_backslash = true;
+                        } else if c == '$' {
+                            self.latex_state.mode = LaTeXMode::PendingDollar;
+                        } else {
+                            self.input_char_internal(c);
+                        }
                     }
+                } else if c == '\\' {
+                    self.latex_state.pending_backslash = true;
+                } else if c == '$' {
+                    // Saw first `$`, wait to see if it's `$$` (display) or `$` (inline).
+                    self.latex_state.mode = LaTeXMode::PendingDollar;
+                } else {
+                    self.input_char_internal(c);
                 }
-                // Normal character, output it
-                self.input_char_internal(c);
-                self.latex_state.prev_char = Some(c);
             },
             LaTeXMode::PendingDollar => {
-                // We saw $, now check the next character.
-                // Consider it a formula start if followed by:
-                // - '\' (LaTeX commands like \alpha, \frac)
-                // - letter (like x^2, a_1)
-                // Reject if followed by space or digit (likely shell variable like $1, $?)
-                if c == '\\' || c.is_ascii_alphabetic() {
-                    // Start of inline formula.
+                // We just saw `$`, now determine inline vs display math.
+                if self.latex_state.pending_backslash {
+                    // Had `$\`, now see what follows.
+                    self.latex_state.pending_backslash = false;
+                    if c == '$' {
+                        // `$\$` - start inline math with literal `$` as first char.
+                        self.latex_state.mode = LaTeXMode::InMath;
+                        self.latex_state.buffer.clear();
+                        self.latex_state.buffer.push('$');
+                    } else {
+                        // `$\x` - start inline math with `\x` as content.
+                        self.latex_state.mode = LaTeXMode::InMath;
+                        self.latex_state.buffer.clear();
+                        self.latex_state.buffer.push('\\');
+                        if c == '\\' {
+                            self.latex_state.pending_backslash = true;
+                        } else {
+                            self.latex_state.buffer.push(c);
+                        }
+                    }
+                } else if c == '$' {
+                    // `$$` - start display math.
+                    self.latex_state.mode = LaTeXMode::InDisplayMath;
+                    self.latex_state.buffer.clear();
+                } else if c == '\\' {
+                    // `$\` - start inline math, pending backslash.
+                    self.latex_state.mode = LaTeXMode::InMath;
+                    self.latex_state.buffer.clear();
+                    self.latex_state.pending_backslash = true;
+                } else {
+                    // `$x` - start inline math with `x` as first char.
                     self.latex_state.mode = LaTeXMode::InMath;
                     self.latex_state.buffer.clear();
                     self.latex_state.buffer.push(c);
-                } else {
-                    // Not a formula, output $ and current char normally.
-                    self.input_char_internal('$');
-                    self.input_char_internal(c);
-                    self.latex_state.mode = LaTeXMode::Normal;
                 }
-                self.latex_state.prev_char = Some(c);
             },
             LaTeXMode::InMath => {
-                if c == '$' {
-                    // Potential end of formula
-                    // Check if preceded by space (invalid end)
-                    let last_char = self.latex_state.buffer.chars().last();
-                    if last_char.is_some() && !last_char.unwrap().is_whitespace() {
-                        // Could be valid end, wait to check next char
-                        self.latex_state.mode = LaTeXMode::PendingEnd;
+                if self.latex_state.pending_backslash {
+                    self.latex_state.pending_backslash = false;
+                    if c == '$' {
+                        // `\$` escape inside formula: add literal `$` to buffer.
+                        self.latex_state.buffer.push('$');
                     } else {
-                        // Invalid end (preceded by space or empty), treat $ as content
-                        self.latex_state.buffer.push(c);
+                        // Not an escape: add backslash and char to buffer.
+                        self.latex_state.buffer.push('\\');
+                        if c == '\\' {
+                            self.latex_state.pending_backslash = true;
+                        } else {
+                            self.latex_state.buffer.push(c);
+                        }
                     }
+                } else if c == '\\' {
+                    self.latex_state.pending_backslash = true;
+                } else if c == '$' {
+                    // End of inline formula `$...$`.
+                    let formula = mem::take(&mut self.latex_state.buffer);
+                    let original_width = formula.len() + 2; // +2 for `$...$`
+                    self.render_latex_formula(formula, original_width);
+                    self.latex_state.mode = LaTeXMode::Normal;
                 } else {
-                    // Continue buffering formula content
+                    // Continue buffering formula content.
                     self.latex_state.buffer.push(c);
                 }
-                self.latex_state.prev_char = Some(c);
             },
-            LaTeXMode::PendingEnd => {
-                // We're at end $, check the following character.
-                if c.is_alphanumeric() {
-                    // Not a valid end: $ followed by alphanumeric.
-                    // The $ is part of the formula content.
+            LaTeXMode::InDisplayMath => {
+                if self.latex_state.pending_backslash {
+                    self.latex_state.pending_backslash = false;
+                    if c == '$' {
+                        // `\$` escape inside display formula: add literal `$` to buffer.
+                        self.latex_state.buffer.push('$');
+                    } else {
+                        // Not an escape: add backslash and char to buffer.
+                        self.latex_state.buffer.push('\\');
+                        if c == '\\' {
+                            self.latex_state.pending_backslash = true;
+                        } else {
+                            self.latex_state.buffer.push(c);
+                        }
+                    }
+                } else if c == '\\' {
+                    self.latex_state.pending_backslash = true;
+                } else if c == '$' {
+                    // Saw first `$` of potential `$$` end.
+                    self.latex_state.mode = LaTeXMode::PendingDisplayEnd;
+                } else {
+                    // Continue buffering formula content.
+                    self.latex_state.buffer.push(c);
+                }
+            },
+            LaTeXMode::PendingDisplayEnd => {
+                // In display math, just saw `$`, waiting for second `$`.
+                if self.latex_state.pending_backslash {
+                    // Had `$\` after display content, now see what follows.
+                    self.latex_state.pending_backslash = false;
+                    if c == '$' {
+                        // `$\$` inside display - the first `$` was content, `\$` is literal `$`.
+                        self.latex_state.buffer.push('$');
+                        self.latex_state.buffer.push('$');
+                        self.latex_state.mode = LaTeXMode::InDisplayMath;
+                    } else {
+                        // `$\x` - first `$` was content, `\x` is also content.
+                        self.latex_state.buffer.push('$');
+                        self.latex_state.buffer.push('\\');
+                        if c == '\\' {
+                            self.latex_state.pending_backslash = true;
+                        } else {
+                            self.latex_state.buffer.push(c);
+                        }
+                        self.latex_state.mode = LaTeXMode::InDisplayMath;
+                    }
+                } else if c == '$' {
+                    // `$$` - end of display formula.
+                    let formula = mem::take(&mut self.latex_state.buffer);
+                    let original_width = formula.len() + 4; // +4 for `$$...$$`
+                    self.render_latex_formula(formula, original_width);
+                    self.latex_state.mode = LaTeXMode::Normal;
+                } else if c == '\\' {
+                    // `$\` - the `$` was part of content, now pending backslash.
+                    self.latex_state.buffer.push('$');
+                    self.latex_state.pending_backslash = true;
+                    self.latex_state.mode = LaTeXMode::InDisplayMath;
+                } else {
+                    // `$x` - the `$` was part of content, `x` is also content.
                     self.latex_state.buffer.push('$');
                     self.latex_state.buffer.push(c);
-                    self.latex_state.mode = LaTeXMode::InMath;
-                } else {
-                    // Check if buffer content looks like LaTeX formula.
-                    // LaTeX formulas typically contain: \, ^, or _
-                    // Without these, it's likely a shell variable like $s=$
-                    let has_latex_features = self.latex_state.buffer.contains('\\')
-                        || self.latex_state.buffer.contains('^')
-                        || self.latex_state.buffer.contains('_');
-
-                    if !has_latex_features {
-                        // Not a LaTeX formula, output as-is: $buffer$
-                        self.input_char_internal('$');
-                        let buffer = mem::take(&mut self.latex_state.buffer);
-                        for ch in buffer.chars() {
-                            self.input_char_internal(ch);
-                        }
-                        self.input_char_internal('$');
-                        self.input_char_internal(c);
-                        self.latex_state.mode = LaTeXMode::Normal;
-                        self.latex_state.prev_char = Some(c);
-                        return;
-                    }
-
-                    // Valid LaTeX formula! Parse and render using GPU approach.
-                    let formula = mem::take(&mut self.latex_state.buffer);
-                    let original_width = formula.len() + 2;
-                    let parsed = parse_latex_with_layout(&formula);
-
-                    // Helper to get written point after input_char_internal.
-                    let get_written_point = |term: &Self| {
-                        if term.grid.cursor.input_needs_wrap {
-                            Point::new(term.grid.cursor.point.line, Column(term.columns() - 1))
-                        } else {
-                            Point::new(
-                                term.grid.cursor.point.line,
-                                Column(term.grid.cursor.point.column.0.saturating_sub(1)),
-                            )
-                        }
-                    };
-
-                    // Helper to output spacer cells.
-                    fn output_spacers(term: &mut Term<impl EventListener>, count: usize) {
-                        for _ in 0..count {
-                            term.input_char_internal(' ');
-                            let spacer_point = if term.grid.cursor.input_needs_wrap {
-                                Point::new(term.grid.cursor.point.line, Column(term.columns() - 1))
-                            } else {
-                                Point::new(
-                                    term.grid.cursor.point.line,
-                                    Column(term.grid.cursor.point.column.0.saturating_sub(1)),
-                                )
-                            };
-                            term.grid[spacer_point].set_math_spacer();
-                        }
-                    }
-
-                    match parsed {
-                        ParsedFormula::Fraction { numerator, denominator } => {
-                            self.input_char_internal('─');
-                            let written_point = get_written_point(self);
-                            self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                            self.grid[written_point].set_math_layout(cell::MathLayout::Fraction {
-                                numerator,
-                                denominator,
-                            });
-                            output_spacers(self, original_width - 1);
-                        },
-                        ParsedFormula::Superscript { base, script } => {
-                            let first_char = base.first().copied().unwrap_or(' ');
-                            self.input_char_internal(first_char);
-                            let written_point = get_written_point(self);
-                            self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                            self.grid[written_point]
-                                .set_math_layout(cell::MathLayout::Superscript { base, script });
-                            output_spacers(self, original_width - 1);
-                        },
-                        ParsedFormula::Subscript { base, script } => {
-                            let first_char = base.first().copied().unwrap_or(' ');
-                            self.input_char_internal(first_char);
-                            let written_point = get_written_point(self);
-                            self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                            self.grid[written_point]
-                                .set_math_layout(cell::MathLayout::Subscript { base, script });
-                            output_spacers(self, original_width - 1);
-                        },
-                        ParsedFormula::Sqrt { content } => {
-                            self.input_char_internal('√');
-                            let written_point = get_written_point(self);
-                            self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                            self.grid[written_point]
-                                .set_math_layout(cell::MathLayout::Sqrt { content });
-                            output_spacers(self, original_width - 1);
-                        },
-                        ParsedFormula::SubSuperscript { base, lower, upper } => {
-                            // Write the first base character (e.g., ∑ for \sum).
-                            let first_char = base.first().copied().unwrap_or(' ');
-                            self.input_char_internal(first_char);
-                            let written_point = get_written_point(self);
-                            self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                            self.grid[written_point].set_math_layout(
-                                cell::MathLayout::SubSuperscript { base, lower, upper },
-                            );
-                            output_spacers(self, original_width - 1);
-                        },
-                        ParsedFormula::Simple(result) => {
-                            let chars: Vec<char> = result.chars().collect();
-                            if !chars.is_empty() {
-                                let first_char = chars[0];
-                                self.input_char_internal(first_char);
-                                let written_point = get_written_point(self);
-                                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                                if chars.len() > 1 {
-                                    self.grid[written_point].push_math_chars(chars[1..].to_vec());
-                                }
-                                output_spacers(self, original_width - 1);
-                            }
-                        },
-                    }
-
-                    // Output the character that followed the closing $
-                    self.input_char_internal(c);
-                    self.latex_state.mode = LaTeXMode::Normal;
+                    self.latex_state.mode = LaTeXMode::InDisplayMath;
                 }
-                self.latex_state.prev_char = Some(c);
             },
         }
     }
@@ -2327,8 +2791,6 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn carriage_return(&mut self) {
         self.flush_pending_latex();
-        // Reset prev_char so new line can start formula detection fresh
-        self.latex_state.prev_char = None;
         trace!("Carriage return");
         let new_col = 0;
         let line = self.grid.cursor.point.line.0 as usize;
@@ -2341,8 +2803,6 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn linefeed(&mut self) {
         self.flush_pending_latex();
-        // Reset prev_char so new line can start formula detection fresh
-        self.latex_state.prev_char = None;
         trace!("Linefeed");
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
@@ -3199,6 +3659,12 @@ impl<T: EventListener> Handler for Term<T> {
     fn text_area_size_chars(&mut self) {
         let text = format!("\x1b[8;{};{}t", self.screen_lines(), self.columns());
         self.event_proxy.send_event(Event::PtyWrite(text));
+    }
+
+    #[inline]
+    fn set_semantic_zone(&mut self, zone: SemanticZone, _exit_code: Option<i32>) {
+        trace!("Setting semantic zone to {:?}", zone);
+        self.semantic_zone = zone;
     }
 }
 
@@ -4278,31 +4744,31 @@ mod parse_tests {
     #[test]
     fn test_math_italic_conversion() {
         // Test that ASCII letters are converted to math italic
-        let result = parse_latex_simple("abc");
+        let result: String = parse_latex_to_chars("abc").into_iter().collect();
         assert_eq!(result, "𝑎𝑏𝑐");
 
         // Test uppercase
-        let result = parse_latex_simple("ABC");
+        let result: String = parse_latex_to_chars("ABC").into_iter().collect();
         assert_eq!(result, "𝐴𝐵𝐶");
 
         // Test mixed case
-        let result = parse_latex_simple("aA");
+        let result: String = parse_latex_to_chars("aA").into_iter().collect();
         assert_eq!(result, "𝑎𝐴");
 
         // Test that numbers stay unchanged
-        let result = parse_latex_simple("123");
+        let result: String = parse_latex_to_chars("123").into_iter().collect();
         assert_eq!(result, "123");
 
         // Test that operators stay unchanged
-        let result = parse_latex_simple("a + b = c");
+        let result: String = parse_latex_to_chars("a + b = c").into_iter().collect();
         assert_eq!(result, "𝑎 + 𝑏 = 𝑐");
 
         // Test special case: 'h' maps to U+210E (Planck constant)
-        let result = parse_latex_simple("h");
+        let result: String = parse_latex_to_chars("h").into_iter().collect();
         assert_eq!(result, "ℎ");
 
         // Test full expression
-        let result = parse_latex_simple("f(x) = ax + b");
+        let result: String = parse_latex_to_chars("f(x) = ax + b").into_iter().collect();
         assert_eq!(result, "𝑓(𝑥) = 𝑎𝑥 + 𝑏");
     }
 }

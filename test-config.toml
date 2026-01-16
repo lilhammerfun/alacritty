@@ -1,0 +1,8 @@
+# Alacritty Math Test Config
+[font]
+size = 16.0
+normal.family = "JetBrains Mono"
+
+[math]
+enabled = true
+enabled_programs = ["node", "zsh", "bash"]

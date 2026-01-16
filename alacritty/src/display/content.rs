@@ -7,7 +7,7 @@ use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Dimensions, Indexed};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::selection::SelectionRange;
-use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink, MathLayout};
+use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink, MathCharStyle, MathLayout};
 use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{self, RenderableContent as TerminalContent, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
@@ -208,6 +208,8 @@ pub struct RenderableCellExtra {
     pub hyperlink: Option<Hyperlink>,
     /// Characters in a math formula (for formula start cells).
     pub math_chars: Option<Vec<char>>,
+    /// Styles for math characters (parallel array to math_chars).
+    pub math_styles: Option<Vec<MathCharStyle>>,
     /// Whether this cell is a math formula spacer.
     pub math_spacer: bool,
     /// Complex math layout for vertical rendering.
@@ -297,6 +299,7 @@ impl RenderableCell {
         let zerowidth = cell.zerowidth();
         let hyperlink = cell.hyperlink();
         let math_chars = cell.math_chars();
+        let math_styles = cell.math_styles();
         let math_spacer = cell.is_math_spacer();
         let math_layout = cell.math_layout();
 
@@ -310,6 +313,7 @@ impl RenderableCell {
                 zerowidth: zerowidth.map(|zerowidth| zerowidth.to_vec()),
                 hyperlink,
                 math_chars: math_chars.map(|chars| chars.to_vec()),
+                math_styles: math_styles.map(|styles| styles.to_vec()),
                 math_spacer,
                 math_layout: math_layout.cloned(),
             })

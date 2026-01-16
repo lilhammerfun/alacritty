@@ -29,6 +29,7 @@ use crate::config::cursor::Cursor;
 use crate::config::debug::Debug;
 use crate::config::font::Font;
 use crate::config::general::General;
+use crate::config::math::MathConfig;
 use crate::config::mouse::Mouse;
 use crate::config::scrolling::Scrolling;
 use crate::config::selection::Selection;
@@ -86,6 +87,9 @@ pub struct UiConfig {
     /// Config for the alacritty_terminal itself.
     pub terminal: Terminal,
 
+    /// Math formula rendering configuration.
+    pub math: MathConfig,
+
     /// Keyboard configuration.
     keyboard: Keyboard,
 
@@ -124,6 +128,8 @@ impl UiConfig {
             default_cursor_style: self.cursor.style(),
             osc52: self.terminal.osc52.0,
             kitty_keyboard: true,
+            math_enabled: self.math.enabled,
+            math_enabled_programs: self.math.enabled_programs.clone(),
         }
     }
 

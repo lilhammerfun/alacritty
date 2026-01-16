@@ -165,3 +165,35 @@ pub fn foreground_process_path(
         Ok(PathBuf::from(foreground_path))
     }
 }
+
+/// Get the name of the foreground process.
+#[cfg(not(any(windows, target_os = "openbsd")))]
+pub fn foreground_process_name(master_fd: RawFd, shell_pid: u32) -> Option<String> {
+    let mut pid = unsafe { libc::tcgetpgrp(master_fd) };
+    if pid < 0 {
+        pid = shell_pid as pid_t;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        macos::proc::name(pid).ok()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Linux: read /proc/{pid}/comm
+        #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+        let comm_path = format!("/proc/{pid}/comm");
+        #[cfg(target_os = "freebsd")]
+        let comm_path = format!("/compat/linux/proc/{pid}/comm");
+
+        std::fs::read_to_string(comm_path).ok().map(|s| s.trim().to_string())
+    }
+}
+
+/// Get the name of the foreground process.
+#[cfg(target_os = "openbsd")]
+pub fn foreground_process_name(_master_fd: RawFd, _shell_pid: u32) -> Option<String> {
+    // OpenBSD: not implemented yet
+    None
+}

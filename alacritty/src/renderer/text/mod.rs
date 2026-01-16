@@ -3,7 +3,7 @@ use crossfont::{GlyphKey, RasterizedGlyph};
 use log::debug;
 
 use alacritty_terminal::index::Point;
-use alacritty_terminal::term::cell::{Flags, MathLayout};
+use alacritty_terminal::term::cell::{Flags, MathCharStyle, MathLayout};
 
 use crate::display::SizeInfo;
 use crate::display::content::RenderableCell;
@@ -167,6 +167,7 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
             if let Some(layout) = cell.extra.as_mut().and_then(|extra| extra.math_layout.take()) {
                 debug!("MathLayout found: {:?}", layout);
                 let cell_height = size_info.cell_height() as i16;
+                let cell_width = size_info.cell_width() as i16;
 
                 match layout {
                     MathLayout::Fraction { numerator, denominator } => {
@@ -320,12 +321,44 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
                             x_offset += scaled_width;
                         }
                     },
-                    MathLayout::Sqrt { content } => {
+                    MathLayout::Sqrt { index, content } => {
+                        // For n-th root, render index as small superscript before √.
+                        let mut content_x_offset = 0i16;
+                        if let Some(idx) = index {
+                            let scale = 0.6f32;
+                            let y_offset = -(cell_height / 3);
+                            let mut x_off = -(cell_width / 3);
+                            for &ch in idx.iter() {
+                                glyph_key.character = ch;
+                                let mut glyph = glyph_cache.get(glyph_key, self, false);
+                                let scaled_width = (glyph.width as f32 * scale) as i16;
+                                glyph.width = scaled_width;
+                                glyph.height = (glyph.height as f32 * scale) as i16;
+                                glyph.top = (glyph.top as f32 * scale) as i16 - y_offset;
+                                glyph.left = (glyph.left as f32 * scale) as i16 + x_off;
+                                let offset_cell = RenderableCell {
+                                    character: ch,
+                                    point: cell.point,
+                                    fg: cell.fg,
+                                    bg: cell.bg,
+                                    bg_alpha: 0.,
+                                    underline: cell.underline,
+                                    flags: cell.flags & !Flags::MATH_FORMULA,
+                                    extra: None,
+                                };
+                                self.add_render_item(&offset_cell, &glyph, size_info);
+                                x_off += scaled_width;
+                            }
+                            // Adjust content offset if index is wide.
+                            content_x_offset = x_off.max(0);
+                        }
+
                         // Sqrt symbol is already rendered as main character.
                         // Render content characters after the sqrt symbol.
                         for (i, &ch) in content.iter().enumerate() {
                             glyph_key.character = ch;
-                            let glyph = glyph_cache.get(glyph_key, self, false);
+                            let mut glyph = glyph_cache.get(glyph_key, self, false);
+                            glyph.left += content_x_offset;
                             let offset_cell = RenderableCell {
                                 character: ch,
                                 point: Point::new(cell.point.line, cell.point.column + i + 1),
@@ -414,13 +447,59 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
             } else if let Some(math_chars) =
                 cell.extra.as_mut().and_then(|extra| extra.math_chars.take().filter(|_| !hidden))
             {
-                // Simple formula: render characters with X offset.
+                // Get styles if available.
+                let math_styles = cell.extra.as_mut().and_then(|extra| extra.math_styles.take());
+
+                // Simple formula: render characters with X offset and scaling based on style.
+                let cell_height = size_info.cell_height() as i16;
+                let scale = 0.7f32;
+                let sub_y_offset = (cell_height as f32 * 0.3) as i16;
+                let sup_y_offset = -(cell_height as f32 * 0.4) as i16;
+
+                let mut x_offset = 0i16;
                 for (i, character) in math_chars.into_iter().enumerate() {
                     glyph_key.character = character;
-                    let glyph = glyph_cache.get(glyph_key, self, false);
+                    let base_glyph = glyph_cache.get(glyph_key, self, false);
+
+                    // Check style for this character.
+                    let style = math_styles
+                        .as_ref()
+                        .and_then(|s| s.get(i).copied())
+                        .unwrap_or(MathCharStyle::Normal);
+
+                    let glyph = match style {
+                        MathCharStyle::Subscript => {
+                            let mut g = base_glyph;
+                            let scaled_width = (g.width as f32 * scale) as i16;
+                            g.width = scaled_width;
+                            g.height = (g.height as f32 * scale) as i16;
+                            g.top = (g.top as f32 * scale) as i16 + sub_y_offset;
+                            g.left = (g.left as f32 * scale) as i16 + x_offset;
+                            x_offset += scaled_width;
+                            g
+                        },
+                        MathCharStyle::Superscript => {
+                            let mut g = base_glyph;
+                            let scaled_width = (g.width as f32 * scale) as i16;
+                            g.width = scaled_width;
+                            g.height = (g.height as f32 * scale) as i16;
+                            g.top = (g.top as f32 * scale) as i16 + sup_y_offset;
+                            g.left = (g.left as f32 * scale) as i16 + x_offset;
+                            x_offset += scaled_width;
+                            g
+                        },
+                        MathCharStyle::Normal | MathCharStyle::Bold => {
+                            let mut g = base_glyph;
+                            g.left += x_offset;
+                            x_offset += g.width;
+                            g
+                        },
+                    };
+
+                    // All styled chars share the same column, with x_offset handling positioning.
                     let offset_cell = RenderableCell {
                         character,
-                        point: Point::new(cell.point.line, cell.point.column + i + 1),
+                        point: Point::new(cell.point.line, cell.point.column + 1),
                         fg: cell.fg,
                         bg: cell.bg,
                         bg_alpha: 0.,
