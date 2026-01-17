@@ -179,6 +179,9 @@ pub struct CellExtra {
     /// Complex math layout (fraction, superscript, subscript, sqrt).
     #[cfg_attr(feature = "serde", serde(default))]
     math_layout: Option<MathLayout>,
+    /// Original LaTeX formula string (for copy/paste support).
+    #[cfg_attr(feature = "serde", serde(default))]
+    math_original: Option<String>,
 }
 
 /// Content and attributes of a single cell in the terminal grid.
@@ -325,6 +328,19 @@ impl Cell {
     pub fn set_math_layout(&mut self, layout: MathLayout) {
         let extra = self.extra.get_or_insert(Default::default());
         Arc::make_mut(extra).math_layout = Some(layout);
+    }
+
+    /// Get the original LaTeX formula stored in this cell.
+    #[inline]
+    pub fn math_original(&self) -> Option<&str> {
+        self.extra.as_ref()?.math_original.as_deref()
+    }
+
+    /// Store the original LaTeX formula in this cell.
+    #[inline]
+    pub fn set_math_original(&mut self, original: String) {
+        let extra = self.extra.get_or_insert(Default::default());
+        Arc::make_mut(extra).math_original = Some(original);
     }
 }
 

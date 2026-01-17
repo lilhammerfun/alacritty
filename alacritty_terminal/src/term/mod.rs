@@ -1615,6 +1615,22 @@ impl<T> Term<T> {
                 tab_mode = true;
             }
 
+            // Skip math spacer cells (they occupy space but have no content).
+            if cell.is_math_spacer() {
+                continue;
+            }
+
+            // For math formula start cells, output the original LaTeX formula.
+            if cell.flags.contains(Flags::MATH_FORMULA) {
+                if let Some(original) = cell.math_original() {
+                    text.push_str(original);
+                } else {
+                    // Fallback: just push the cell character.
+                    text.push(cell.c);
+                }
+                continue;
+            }
+
             if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                 // Push cells primary character.
                 text.push(cell.c);
@@ -2111,10 +2127,17 @@ impl<T> Term<T> {
     }
 
     /// Render a completed LaTeX formula to the terminal grid.
-    fn render_latex_formula(&mut self, formula: String, original_width: usize)
+    fn render_latex_formula(&mut self, formula: String, original_width: usize, is_display: bool)
     where
         T: EventListener,
     {
+        // Build original LaTeX string for copy/paste support.
+        let original_latex = if is_display {
+            format!("$${}$$", formula)
+        } else {
+            format!("${}$", formula)
+        };
+
         let parsed = parse_latex_with_layout(&formula);
 
         // Helper to get written point after input_char_internal.
@@ -2146,6 +2169,7 @@ impl<T> Term<T> {
                 self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
                 self.grid[written_point]
                     .set_math_layout(cell::MathLayout::Fraction { numerator, denominator });
+                self.grid[written_point].set_math_original(original_latex);
                 output_spacers(self, original_width - 1);
             },
             ParsedFormula::Superscript { base, script } => {
@@ -2156,6 +2180,7 @@ impl<T> Term<T> {
                 self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
                 self.grid[written_point]
                     .set_math_layout(cell::MathLayout::Superscript { base, script });
+                self.grid[written_point].set_math_original(original_latex);
                 output_spacers(self, original_width - 1);
             },
             ParsedFormula::Subscript { base, script } => {
@@ -2166,6 +2191,7 @@ impl<T> Term<T> {
                 self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
                 self.grid[written_point]
                     .set_math_layout(cell::MathLayout::Subscript { base, script });
+                self.grid[written_point].set_math_original(original_latex);
                 output_spacers(self, original_width - 1);
             },
             ParsedFormula::Sqrt { index, content } => {
@@ -2174,6 +2200,7 @@ impl<T> Term<T> {
                 let written_point = get_written_point(self);
                 self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
                 self.grid[written_point].set_math_layout(cell::MathLayout::Sqrt { index, content });
+                self.grid[written_point].set_math_original(original_latex);
                 output_spacers(self, original_width - 1);
             },
             ParsedFormula::SubSuperscript { base, lower, upper } => {
@@ -2187,6 +2214,7 @@ impl<T> Term<T> {
                     lower,
                     upper,
                 });
+                self.grid[written_point].set_math_original(original_latex);
                 output_spacers(self, original_width - 1);
             },
             ParsedFormula::Simple(spans) => {
@@ -2214,6 +2242,7 @@ impl<T> Term<T> {
                     // 2. Get the cell and mark it as formula start.
                     let written_point = get_written_point(self);
                     self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
+                    self.grid[written_point].set_math_original(original_latex);
 
                     // 3. Store remaining characters and styles in the first cell.
                     if chars.len() > 1 {
@@ -2439,7 +2468,7 @@ impl<T: EventListener> Handler for Term<T> {
                     // End of inline formula `$...$`.
                     let formula = mem::take(&mut self.latex_state.buffer);
                     let original_width = formula.len() + 2; // +2 for `$...$`
-                    self.render_latex_formula(formula, original_width);
+                    self.render_latex_formula(formula, original_width, false);
                     self.latex_state.mode = LaTeXMode::Normal;
                 } else {
                     // Continue buffering formula content.
@@ -2496,7 +2525,7 @@ impl<T: EventListener> Handler for Term<T> {
                     // `$$` - end of display formula.
                     let formula = mem::take(&mut self.latex_state.buffer);
                     let original_width = formula.len() + 4; // +4 for `$$...$$`
-                    self.render_latex_formula(formula, original_width);
+                    self.render_latex_formula(formula, original_width, true);
                     self.latex_state.mode = LaTeXMode::Normal;
                 } else if c == '\\' {
                     // `$\` - the `$` was part of content, now pending backslash.

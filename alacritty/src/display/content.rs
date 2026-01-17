@@ -178,9 +178,14 @@ impl Iterator for RenderableContent<'_> {
                 return Some(cell);
             } else if !cell.is_empty()
                 && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-                && !cell.extra.as_ref().map_or(false, |e| e.math_spacer)
             {
-                // Skip empty cells, wide char spacers, and math formula spacers.
+                // Skip empty cells and wide char spacers.
+                // Note: math_spacer cells are NOT skipped - they need to render
+                // their background for selection highlighting to work correctly.
+                return Some(cell);
+            } else if cell.extra.as_ref().map_or(false, |e| e.math_spacer) {
+                // Math spacer cells: render them for selection highlighting,
+                // even though they appear empty (character is space).
                 return Some(cell);
             }
         }

@@ -6,4 +6,4 @@ preexec() { print -Pn "\e]133;C\a" }
 
 PS1='%F{green}[math]%f %~ %# '
 
-echo "Math test ready. Try: echo '\$\\alpha + \\frac{a}{b}\$'"
+echo -E "Math test ready. Try: echo -E '\$\\alpha + \\frac{a}{b}\$'"
