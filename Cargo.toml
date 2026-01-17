@@ -21,4 +21,4 @@ toml = "0.9.2"
 toml_edit = "0.23.1"
 
 [patch.crates-io]
-vte = { path = "../vte-fork" }
+vte = { git = "https://github.com/lilhammerfun/vte.git", branch = "feature/osc133-shell-integration" }
