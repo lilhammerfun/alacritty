@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::{cmp, mem};
 
 use alacritty_terminal::event::EventListener;
+use alacritty_terminal::graphics::GraphicId;
 use alacritty_terminal::grid::{Dimensions, Indexed};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::selection::SelectionRange;
@@ -17,6 +18,8 @@ use crate::display::color::{CellRgb, DIM_FACTOR, List, Rgb};
 use crate::display::hint::{self, HintState};
 use crate::display::{Display, SizeInfo};
 use crate::event::SearchState;
+
+use smallvec::SmallVec;
 
 /// Minimum contrast between a fixed cursor color and the cell's background.
 pub const MIN_CURSOR_CONTRAST: f64 = 1.5;
@@ -205,6 +208,19 @@ pub struct RenderableCell {
     pub extra: Option<Box<RenderableCellExtra>>,
 }
 
+/// Graphic data stored in a single cell.
+#[derive(Clone, Debug)]
+pub struct RenderableGraphicCell {
+    /// Texture to draw the graphic in this cell.
+    pub id: GraphicId,
+
+    /// Offset in the x direction.
+    pub offset_x: u16,
+
+    /// Offset in the y direction.
+    pub offset_y: u16,
+}
+
 /// Extra storage with rarely present fields for [`RenderableCell`], to reduce the cell size we
 /// pass around.
 #[derive(Clone, Debug)]
@@ -219,6 +235,7 @@ pub struct RenderableCellExtra {
     pub math_spacer: bool,
     /// Complex math layout for vertical rendering.
     pub math_layout: Option<MathLayout>,
+    pub graphics: Option<SmallVec<[RenderableGraphicCell; 1]>>,
 }
 
 impl RenderableCell {
@@ -308,11 +325,23 @@ impl RenderableCell {
         let math_spacer = cell.is_math_spacer();
         let math_layout = cell.math_layout();
 
+        let graphics = cell.graphics().map(|graphics| {
+            graphics
+                .iter()
+                .map(|graphic| RenderableGraphicCell {
+                    id: graphic.texture.id,
+                    offset_x: graphic.offset_x,
+                    offset_y: graphic.offset_y,
+                })
+                .collect::<_>()
+        });
+
         let extra = (zerowidth.is_some()
             || hyperlink.is_some()
             || math_chars.is_some()
             || math_spacer
-            || math_layout.is_some())
+            || math_layout.is_some()
+            || graphics.is_some())
         .then(|| {
             Box::new(RenderableCellExtra {
                 zerowidth: zerowidth.map(|zerowidth| zerowidth.to_vec()),
@@ -321,6 +350,7 @@ impl RenderableCell {
                 math_styles: math_styles.map(|styles| styles.to_vec()),
                 math_spacer,
                 math_layout: math_layout.cloned(),
+                graphics,
             })
         });
 
