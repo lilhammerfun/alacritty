@@ -5,4 +5,4 @@ normal.family = "JetBrains Mono"
 
 [math]
 enabled = true
-enabled_programs = ["node", "zsh", "bash"]
+enabled_programs = []

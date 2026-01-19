@@ -9,6 +9,7 @@ pub mod event_loop;
 pub mod graphics;
 pub mod grid;
 pub mod index;
+pub mod math;
 pub mod selection;
 pub mod sync;
 pub mod term;

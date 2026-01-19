@@ -628,6 +628,79 @@ pub fn insert_graphic<L: EventListener>(
     term.graphics.pending.push(GraphicData { id: graphic_id, ..graphic });
 }
 
+/// Insert an inline graphic at the specified position without triggering linefeed.
+///
+/// This is used for inline formula rendering where the image may overflow
+/// vertically but should only occupy a single logical line.
+pub fn insert_inline_graphic<L: EventListener>(
+    term: &mut Term<L>,
+    graphic: GraphicData,
+    start_col: usize,
+    char_width: usize,
+) {
+    let cell_width = term.graphics.cell_width as usize;
+    let cell_height = term.graphics.cell_height as usize;
+
+    if graphic.width > MAX_GRAPHIC_DIMENSIONS[0] || graphic.height > MAX_GRAPHIC_DIMENSIONS[1] {
+        return;
+    }
+
+    let width = graphic.width as u16;
+    let height = graphic.height as u16;
+
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let graphic_id = term.graphics.next_id();
+
+    // Calculate vertical offset to center the image on the baseline.
+    // If image is taller than cell, it will overflow above and below.
+    let offset_y_center = if graphic.height > cell_height {
+        // Image overflows: center it vertically
+        ((graphic.height - cell_height) / 2) as u16
+    } else {
+        0
+    };
+
+    let texture = Arc::new(TextureRef {
+        id: graphic_id,
+        width,
+        height,
+        cell_height,
+        texture_operations: Arc::downgrade(&term.graphics.texture_operations),
+    });
+
+    let line = term.grid().cursor.point.line;
+
+    // Only add graphic references to the horizontal cells the formula occupies.
+    // No linefeed is triggered - the image will visually overflow.
+    let row_len = term.grid()[line].len();
+    for (i, col) in (start_col..start_col + char_width).enumerate() {
+        if col >= row_len {
+            break;
+        }
+
+        let offset_x = (i * cell_width) as u16;
+
+        let texture_operations = Arc::downgrade(&term.graphics.texture_operations);
+        let graphic_cell = GraphicCell {
+            texture: texture.clone(),
+            offset_x,
+            offset_y: offset_y_center,
+            texture_operations,
+        };
+
+        let cell = &mut term.grid_mut()[line][Column(col)];
+        cell.set_graphics(smallvec::smallvec![graphic_cell]);
+    }
+
+    term.mark_line_damaged(line);
+
+    // Add the graphic data to the pending queue.
+    term.graphics.pending.push(GraphicData { id: graphic_id, ..graphic });
+}
+
 #[test]
 fn check_opaque_region() {
     let graphic = GraphicData {

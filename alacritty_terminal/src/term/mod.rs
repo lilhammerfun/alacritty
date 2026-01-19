@@ -2163,135 +2163,44 @@ impl<T> Term<T> {
         }
     }
 
-    /// Render a completed LaTeX formula to the terminal grid.
-    fn render_latex_formula(&mut self, formula: String, original_width: usize, is_display: bool)
+    /// Render a completed LaTeX formula to the terminal grid using Sixel graphics.
+    fn render_latex_formula(&mut self, formula: String, original_width: usize, _is_display: bool)
     where
         T: EventListener,
     {
-        // Build original LaTeX string for copy/paste support.
-        let original_latex = if is_display {
-            format!("$${}$$", formula)
-        } else {
-            format!("${}$", formula)
-        };
+        use crate::math::{formula_to_graphic, render_latex_to_png};
 
-        let parsed = parse_latex_with_layout(&formula);
+        // Calculate PPI based on cell height (aim for image height ~ 1.5x cell height for inline)
+        let cell_height = self.graphics.cell_height as f32;
+        let target_height = cell_height * 1.5;
+        // Typst default is 11pt font, which at 72 PPI gives ~15px height
+        // Scale PPI to get desired height
+        let ppi = (target_height / 15.0) * 72.0;
 
-        // Helper to get written point after input_char_internal.
-        let get_written_point = |term: &Self| {
-            if term.grid.cursor.input_needs_wrap {
-                Point::new(term.grid.cursor.point.line, Column(term.columns() - 1))
-            } else {
-                Point::new(
-                    term.grid.cursor.point.line,
-                    Column(term.grid.cursor.point.column.0.saturating_sub(1)),
-                )
-            }
-        };
+        match render_latex_to_png(&formula, ppi) {
+            Ok(image) => {
+                let start_col = self.grid.cursor.point.column.0;
 
-        // Helper to output spacer cells.
-        let output_spacers = |term: &mut Self, count: usize| {
-            for _ in 0..count {
-                term.input_char_internal(' ');
-                let spacer_point = get_written_point(term);
-                term.grid[spacer_point].set_math_spacer();
-            }
-        };
+                // Create graphic data
+                let graphic = formula_to_graphic(image, self.graphics.next_id());
 
-        match parsed {
-            ParsedFormula::Fraction { numerator, denominator } => {
-                // Write fraction line character.
-                self.input_char_internal('─');
-                let written_point = get_written_point(self);
-                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                self.grid[written_point]
-                    .set_math_layout(cell::MathLayout::Fraction { numerator, denominator });
-                self.grid[written_point].set_math_original(original_latex);
-                output_spacers(self, original_width - 1);
-            },
-            ParsedFormula::Superscript { base, script } => {
-                // Write the first base character.
-                let first_char = base.first().copied().unwrap_or(' ');
-                self.input_char_internal(first_char);
-                let written_point = get_written_point(self);
-                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                self.grid[written_point]
-                    .set_math_layout(cell::MathLayout::Superscript { base, script });
-                self.grid[written_point].set_math_original(original_latex);
-                output_spacers(self, original_width - 1);
-            },
-            ParsedFormula::Subscript { base, script } => {
-                // Write the first base character.
-                let first_char = base.first().copied().unwrap_or(' ');
-                self.input_char_internal(first_char);
-                let written_point = get_written_point(self);
-                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                self.grid[written_point]
-                    .set_math_layout(cell::MathLayout::Subscript { base, script });
-                self.grid[written_point].set_math_original(original_latex);
-                output_spacers(self, original_width - 1);
-            },
-            ParsedFormula::Sqrt { index, content } => {
-                // Write the sqrt symbol.
-                self.input_char_internal('√');
-                let written_point = get_written_point(self);
-                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                self.grid[written_point].set_math_layout(cell::MathLayout::Sqrt { index, content });
-                self.grid[written_point].set_math_original(original_latex);
-                output_spacers(self, original_width - 1);
-            },
-            ParsedFormula::SubSuperscript { base, lower, upper } => {
-                // Write the first base character (e.g., ∑ for \sum).
-                let first_char = base.first().copied().unwrap_or(' ');
-                self.input_char_internal(first_char);
-                let written_point = get_written_point(self);
-                self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                self.grid[written_point].set_math_layout(cell::MathLayout::SubSuperscript {
-                    base,
-                    lower,
-                    upper,
-                });
-                self.grid[written_point].set_math_original(original_latex);
-                output_spacers(self, original_width - 1);
-            },
-            ParsedFormula::Simple(spans) => {
-                // Flatten spans to chars and styles.
-                let mut chars = Vec::new();
-                let mut styles = Vec::new();
-                for span in spans {
-                    let style = match span.style {
-                        TextStyle::Normal => cell::MathCharStyle::Normal,
-                        TextStyle::Subscript => cell::MathCharStyle::Subscript,
-                        TextStyle::Superscript => cell::MathCharStyle::Superscript,
-                        TextStyle::Bold => cell::MathCharStyle::Bold,
-                    };
-                    for &ch in &span.chars {
-                        chars.push(ch);
-                        styles.push(style);
-                    }
+                // Insert inline graphic (no linefeed triggered)
+                crate::graphics::insert_inline_graphic(self, graphic, start_col, original_width);
+
+                // Move cursor forward by the formula width
+                for _ in 0..original_width {
+                    self.input_char_internal(' ');
                 }
-
-                if !chars.is_empty() {
-                    // 1. Write the first character.
-                    let first_char = chars[0];
-                    self.input_char_internal(first_char);
-
-                    // 2. Get the cell and mark it as formula start.
-                    let written_point = get_written_point(self);
-                    self.grid[written_point].flags.insert(Flags::MATH_FORMULA);
-                    self.grid[written_point].set_math_original(original_latex);
-
-                    // 3. Store remaining characters and styles in the first cell.
-                    if chars.len() > 1 {
-                        self.grid[written_point]
-                            .push_math_chars_styled(chars[1..].to_vec(), styles[1..].to_vec());
-                    }
-
-                    // 4. Output spacer cells to match original input width.
-                    output_spacers(self, original_width - 1);
+            },
+            Err(e) => {
+                // Fallback: output original formula text
+                log::warn!("Failed to render LaTeX formula: {}", e);
+                for c in formula.chars() {
+                    self.input_char_internal(c);
                 }
             },
         }
+
         self.latex_state.mode = LaTeXMode::Normal;
     }
 
@@ -2413,8 +2322,7 @@ impl<T: EventListener> Handler for Term<T> {
             return;
         }
 
-        // Only process LaTeX in Output regions (OSC 133 shell integration).
-        // Users who want LaTeX rendering must configure their shell to send OSC 133.
+        // Only render LaTeX formulas in Output zone (shell command output).
         if self.semantic_zone != SemanticZone::Output {
             self.input_char_internal(c);
             return;
@@ -3766,8 +3674,15 @@ impl<T: EventListener> Handler for Term<T> {
         self.event_proxy.send_event(Event::PtyWrite(text));
     }
 
-    // NOTE: set_semantic_zone is disabled because vte-graphics doesn't support OSC 133 yet.
-    // The SemanticZone type is defined locally for compatibility with existing code.
+    #[inline]
+    fn set_semantic_zone(&mut self, zone: ansi::SemanticZone, _exit_code: Option<i32>) {
+        self.semantic_zone = match zone {
+            ansi::SemanticZone::Prompt => SemanticZone::Prompt,
+            ansi::SemanticZone::Input => SemanticZone::Input,
+            ansi::SemanticZone::Output => SemanticZone::Output,
+            ansi::SemanticZone::Unknown => SemanticZone::Prompt,
+        };
+    }
 
     #[inline]
     fn graphics_attribute(&mut self, pi: u16, pa: u16) {
