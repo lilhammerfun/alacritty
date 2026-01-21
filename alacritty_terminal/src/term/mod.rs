@@ -93,6 +93,9 @@ pub struct LaTeXState {
     buffer: String,
     /// Whether we just saw a backslash (for `\$` escape handling).
     pending_backslash: bool,
+    /// Number of blank lines to insert after the current line ends.
+    /// Used for tall formulas that need space below to prevent overlap.
+    pending_lines_below: usize,
 }
 
 impl Default for LaTeXState {
@@ -101,929 +104,8 @@ impl Default for LaTeXState {
             mode: LaTeXMode::Normal,
             buffer: String::with_capacity(64),
             pending_backslash: false,
+            pending_lines_below: 0,
         }
-    }
-}
-
-/// Convert ASCII letter to mathematical italic Unicode.
-///
-/// Math mode in LaTeX renders single letters as italic variables.
-/// This function maps:
-/// - Lowercase a-z → U+1D44E - U+1D467 (Mathematical Italic Small)
-/// - Uppercase A-Z → U+1D434 - U+1D44D (Mathematical Italic Capital)
-/// - Special case: 'h' → U+210E (Planck constant, in Letterlike Symbols block)
-fn to_math_italic(c: char) -> char {
-    match c {
-        'a'..='z' => {
-            if c == 'h' {
-                // 'h' is special: Planck constant at U+210E
-                '\u{210E}'
-            } else {
-                let offset = c as u32 - 'a' as u32;
-                // U+1D44E is mathematical italic small a
-                char::from_u32(0x1D44E + offset).unwrap_or(c)
-            }
-        },
-        'A'..='Z' => {
-            let offset = c as u32 - 'A' as u32;
-            // U+1D434 is mathematical italic capital A
-            char::from_u32(0x1D434 + offset).unwrap_or(c)
-        },
-        _ => c,
-    }
-}
-
-/// Convert LaTeX command to Unicode character.
-fn latex_to_unicode(cmd: &str) -> Option<&'static str> {
-    let result = match cmd {
-        // Greek letters (lowercase)
-        "alpha" => "α",
-        "beta" => "β",
-        "gamma" => "γ",
-        "delta" => "δ",
-        "epsilon" => "ε",
-        "varepsilon" => "ε",
-        "zeta" => "ζ",
-        "eta" => "η",
-        "theta" => "θ",
-        "vartheta" => "ϑ",
-        "iota" => "ι",
-        "kappa" => "κ",
-        "lambda" => "λ",
-        "mu" => "μ",
-        "nu" => "ν",
-        "xi" => "ξ",
-        "omicron" => "ο",
-        "pi" => "π",
-        "varpi" => "ϖ",
-        "rho" => "ρ",
-        "varrho" => "ϱ",
-        "sigma" => "σ",
-        "varsigma" => "ς",
-        "tau" => "τ",
-        "upsilon" => "υ",
-        "phi" => "φ",
-        "varphi" => "ϕ",
-        "chi" => "χ",
-        "psi" => "ψ",
-        "omega" => "ω",
-        // Greek letters (uppercase)
-        "Gamma" => "Γ",
-        "Delta" => "Δ",
-        "Theta" => "Θ",
-        "Lambda" => "Λ",
-        "Xi" => "Ξ",
-        "Pi" => "Π",
-        "Sigma" => "Σ",
-        "Upsilon" => "Υ",
-        "Phi" => "Φ",
-        "Psi" => "Ψ",
-        "Omega" => "Ω",
-        // Math operators
-        "pm" => "±",
-        "mp" => "∓",
-        "times" => "×",
-        "div" => "÷",
-        "cdot" => "·",
-        "ast" => "∗",
-        "star" => "⋆",
-        "circ" => "∘",
-        "bullet" => "•",
-        "oplus" => "⊕",
-        "ominus" => "⊖",
-        "otimes" => "⊗",
-        "oslash" => "⊘",
-        "odot" => "⊙",
-        "dagger" => "†",
-        "ddagger" => "‡",
-        "amalg" => "⨿",
-        // Relations
-        "leq" | "le" => "≤",
-        "geq" | "ge" => "≥",
-        "neq" | "ne" => "≠",
-        "approx" => "≈",
-        "equiv" => "≡",
-        "sim" => "∼",
-        "simeq" => "≃",
-        "cong" => "≅",
-        "propto" => "∝",
-        "ll" => "≪",
-        "gg" => "≫",
-        "prec" => "≺",
-        "succ" => "≻",
-        "preceq" => "⪯",
-        "succeq" => "⪰",
-        "perp" => "⊥",
-        "parallel" => "∥",
-        "asymp" => "≍",
-        "doteq" => "≐",
-        "subset" => "⊂",
-        "supset" => "⊃",
-        "subseteq" => "⊆",
-        "supseteq" => "⊇",
-        "sqsubset" => "⊏",
-        "sqsupset" => "⊐",
-        "sqsubseteq" => "⊑",
-        "sqsupseteq" => "⊒",
-        "in" => "∈",
-        "notin" => "∉",
-        "ni" => "∋",
-        "notni" => "∌",
-        // Arrows
-        "to" | "rightarrow" => "→",
-        "leftarrow" | "gets" => "←",
-        "leftrightarrow" => "↔",
-        "Rightarrow" => "⇒",
-        "Leftarrow" => "⇐",
-        "Leftrightarrow" => "⇔",
-        "uparrow" => "↑",
-        "downarrow" => "↓",
-        "Uparrow" => "⇑",
-        "Downarrow" => "⇓",
-        "updownarrow" => "↕",
-        "Updownarrow" => "⇕",
-        "mapsto" => "↦",
-        "longmapsto" => "⟼",
-        "longrightarrow" => "⟶",
-        "longleftarrow" => "⟵",
-        "longleftrightarrow" => "⟷",
-        "Longrightarrow" => "⟹",
-        "Longleftarrow" => "⟸",
-        "Longleftrightarrow" => "⟺",
-        "hookrightarrow" => "↪",
-        "hookleftarrow" => "↩",
-        "nearrow" => "↗",
-        "searrow" => "↘",
-        "swarrow" => "↙",
-        "nwarrow" => "↖",
-        "rightharpoonup" => "⇀",
-        "rightharpoondown" => "⇁",
-        "leftharpoonup" => "↼",
-        "leftharpoondown" => "↽",
-        // Big operators
-        "sum" => "∑",
-        "prod" => "∏",
-        "coprod" => "∐",
-        "int" => "∫",
-        "iint" => "∬",
-        "iiint" => "∭",
-        "oint" => "∮",
-        "bigcup" => "⋃",
-        "bigcap" => "⋂",
-        "bigoplus" => "⨁",
-        "bigotimes" => "⨂",
-        "bigsqcup" => "⨆",
-        "bigwedge" => "⋀",
-        "bigvee" => "⋁",
-        // Misc symbols
-        "infty" => "∞",
-        "partial" => "∂",
-        "nabla" => "∇",
-        "forall" => "∀",
-        "exists" => "∃",
-        "nexists" => "∄",
-        "emptyset" | "varnothing" => "∅",
-        "neg" | "lnot" => "¬",
-        "land" | "wedge" => "∧",
-        "lor" | "vee" => "∨",
-        "cap" => "∩",
-        "cup" => "∪",
-        "setminus" => "∖",
-        "sqrt" => "√",
-        "surd" => "√",
-        "top" => "⊤",
-        "bot" => "⊥",
-        "angle" => "∠",
-        "measuredangle" => "∡",
-        "sphericalangle" => "∢",
-        "triangle" => "△",
-        "triangledown" => "▽",
-        "triangleleft" => "◁",
-        "triangleright" => "▷",
-        "diamond" => "◇",
-        "square" => "□",
-        "blacksquare" => "■",
-        "lozenge" => "◊",
-        "langle" => "⟨",
-        "rangle" => "⟩",
-        "lceil" => "⌈",
-        "rceil" => "⌉",
-        "lfloor" => "⌊",
-        "rfloor" => "⌋",
-        "lvert" => "|",
-        "rvert" => "|",
-        "lVert" => "‖",
-        "rVert" => "‖",
-        "prime" => "′",
-        "backprime" => "‵",
-        "ldots" | "dots" => "…",
-        "cdots" => "⋯",
-        "vdots" => "⋮",
-        "ddots" => "⋱",
-        "therefore" => "∴",
-        "because" => "∵",
-        "degree" => "°",
-        "hbar" => "ℏ",
-        "ell" => "ℓ",
-        "Re" => "ℜ",
-        "Im" => "ℑ",
-        "aleph" => "ℵ",
-        "beth" => "ℶ",
-        "gimel" => "ℷ",
-        "daleth" => "ℸ",
-        "wp" => "℘",
-        "complement" => "∁",
-        // Blackboard bold (double-struck)
-        "mathbb{N}" | "N" if cmd == "mathbb{N}" => "ℕ",
-        "mathbb{Z}" | "Z" if cmd == "mathbb{Z}" => "ℤ",
-        "mathbb{Q}" | "Q" if cmd == "mathbb{Q}" => "ℚ",
-        "mathbb{R}" | "R" if cmd == "mathbb{R}" => "ℝ",
-        "mathbb{C}" | "C" if cmd == "mathbb{C}" => "ℂ",
-        // Common function names (rendered upright)
-        "sin" => "sin",
-        "cos" => "cos",
-        "tan" => "tan",
-        "cot" => "cot",
-        "sec" => "sec",
-        "csc" => "csc",
-        "arcsin" => "arcsin",
-        "arccos" => "arccos",
-        "arctan" => "arctan",
-        "sinh" => "sinh",
-        "cosh" => "cosh",
-        "tanh" => "tanh",
-        "log" => "log",
-        "ln" => "ln",
-        "lg" => "lg",
-        "exp" => "exp",
-        "lim" => "lim",
-        "limsup" => "lim sup",
-        "liminf" => "lim inf",
-        "sup" => "sup",
-        "inf" => "inf",
-        "max" => "max",
-        "min" => "min",
-        "arg" => "arg",
-        "det" => "det",
-        "dim" => "dim",
-        "ker" => "ker",
-        "hom" => "hom",
-        "deg" => "deg",
-        "gcd" => "gcd",
-        "lcm" => "lcm",
-        "mod" => "mod",
-        "Pr" => "Pr",
-        _ => return None,
-    };
-    Some(result)
-}
-
-/// Text style for styled spans.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TextStyle {
-    Normal,
-    Subscript,
-    Superscript,
-    Bold,
-}
-
-/// A span of text with a specific style.
-#[derive(Debug, Clone)]
-pub struct StyledSpan {
-    pub chars: Vec<char>,
-    pub style: TextStyle,
-}
-
-impl StyledSpan {
-    fn normal(chars: Vec<char>) -> Self {
-        Self { chars, style: TextStyle::Normal }
-    }
-    fn subscript(chars: Vec<char>) -> Self {
-        Self { chars, style: TextStyle::Subscript }
-    }
-    fn superscript(chars: Vec<char>) -> Self {
-        Self { chars, style: TextStyle::Superscript }
-    }
-    fn bold(chars: Vec<char>) -> Self {
-        Self { chars, style: TextStyle::Bold }
-    }
-}
-
-/// Result of parsing a LaTeX formula.
-#[derive(Debug)]
-enum ParsedFormula {
-    /// Simple formula with styled spans.
-    Simple(Vec<StyledSpan>),
-    /// Fraction with numerator and denominator.
-    Fraction { numerator: Vec<char>, denominator: Vec<char> },
-    /// Superscript: base^{script}.
-    Superscript { base: Vec<char>, script: Vec<char> },
-    /// Subscript: base_{script}.
-    Subscript { base: Vec<char>, script: Vec<char> },
-    /// Square root: \sqrt{content} or n-th root: \sqrt[n]{content}.
-    Sqrt { index: Option<Vec<char>>, content: Vec<char> },
-    /// Base with both subscript and superscript: base_{lower}^{upper} or base^{upper}_{lower}.
-    /// Used for big operators like \sum_{i=1}^{n}, \int_a^b, etc.
-    SubSuperscript { base: Vec<char>, lower: Vec<char>, upper: Vec<char> },
-}
-
-/// Try to parse a fraction pattern like \frac{numerator}{denominator}.
-fn try_parse_fraction(formula: &str) -> Option<(String, String)> {
-    let formula = formula.trim();
-    if !formula.starts_with("\\frac{") {
-        return None;
-    }
-
-    // Find the first { and its matching }
-    let mut depth = 0;
-    let mut num_start = None;
-    let mut num_end = None;
-    let mut denom_start = None;
-    let mut denom_end = None;
-
-    for (i, c) in formula.char_indices() {
-        match c {
-            '{' => {
-                depth += 1;
-                if depth == 1 && num_start.is_none() {
-                    num_start = Some(i + 1);
-                } else if depth == 1 && num_end.is_some() && denom_start.is_none() {
-                    denom_start = Some(i + 1);
-                }
-            },
-            '}' => {
-                depth -= 1;
-                if depth == 0 && num_end.is_none() {
-                    num_end = Some(i);
-                } else if depth == 0 && denom_end.is_none() {
-                    denom_end = Some(i);
-                    break;
-                }
-            },
-            _ => {},
-        }
-    }
-
-    let num_start = num_start?;
-    let num_end = num_end?;
-    let denom_start = denom_start?;
-    let denom_end = denom_end?;
-
-    let numerator = formula[num_start..num_end].to_string();
-    let denominator = formula[denom_start..denom_end].to_string();
-
-    Some((numerator, denominator))
-}
-
-/// Try to parse a sqrt pattern like \sqrt{content} or \sqrt[n]{content}.
-fn try_parse_sqrt(formula: &str) -> Option<(Option<String>, String)> {
-    let formula = formula.trim();
-    if !formula.starts_with("\\sqrt") {
-        return None;
-    }
-
-    let after_sqrt = &formula[5..]; // Skip "\sqrt"
-
-    // Check for optional index [n].
-    let (index, rest) = if after_sqrt.starts_with('[') {
-        // Find matching ]
-        let mut depth = 0;
-        let mut index_end = None;
-        for (i, c) in after_sqrt.char_indices() {
-            match c {
-                '[' => depth += 1,
-                ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        index_end = Some(i);
-                        break;
-                    }
-                },
-                _ => {},
-            }
-        }
-        let index_end = index_end?;
-        let index = after_sqrt[1..index_end].to_string();
-        (Some(index), &after_sqrt[index_end + 1..])
-    } else {
-        (None, after_sqrt)
-    };
-
-    // Now parse {content}.
-    if !rest.starts_with('{') {
-        return None;
-    }
-
-    let mut depth = 0;
-    let mut content_start = None;
-    let mut content_end = None;
-
-    for (i, c) in rest.char_indices() {
-        match c {
-            '{' => {
-                depth += 1;
-                if depth == 1 && content_start.is_none() {
-                    content_start = Some(i + 1);
-                }
-            },
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    content_end = Some(i);
-                    break;
-                }
-            },
-            _ => {},
-        }
-    }
-
-    let content_start = content_start?;
-    let content_end = content_end?;
-    Some((index, rest[content_start..content_end].to_string()))
-}
-
-/// Try to parse superscript pattern like x^{script} or x^2.
-fn try_parse_superscript(formula: &str) -> Option<(String, String)> {
-    let formula = formula.trim();
-
-    // Don't match complex formulas with spaces or equals signs.
-    if formula.contains(' ') || formula.contains('=') {
-        return None;
-    }
-
-    let caret_pos = formula.find('^')?;
-
-    // Base is everything before ^.
-    let base = formula[..caret_pos].to_string();
-    if base.is_empty() {
-        return None;
-    }
-
-    let after_caret = &formula[caret_pos + 1..];
-
-    // Script can be {content} or a single character.
-    let script = if after_caret.starts_with('{') {
-        // Find matching }.
-        let mut depth = 0;
-        let mut script_end = None;
-        for (i, c) in after_caret.char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        script_end = Some(i);
-                        break;
-                    }
-                },
-                _ => {},
-            }
-        }
-        let script_end = script_end?;
-        after_caret[1..script_end].to_string()
-    } else {
-        // Single character.
-        after_caret.chars().next()?.to_string()
-    };
-
-    Some((base, script))
-}
-
-/// Try to parse subscript pattern like x_{script} or x_2.
-fn try_parse_subscript(formula: &str) -> Option<(String, String)> {
-    let formula = formula.trim();
-
-    // Don't match complex formulas with spaces or equals signs.
-    // These should be handled by parse_latex_to_chars.
-    if formula.contains(' ') || formula.contains('=') {
-        return None;
-    }
-
-    let underscore_pos = formula.find('_')?;
-
-    // Base is everything before _.
-    let base = formula[..underscore_pos].to_string();
-    if base.is_empty() {
-        return None;
-    }
-
-    let after_underscore = &formula[underscore_pos + 1..];
-
-    // Script can be {content} or a single character.
-    let script = if after_underscore.starts_with('{') {
-        // Find matching }.
-        let mut depth = 0;
-        let mut script_end = None;
-        for (i, c) in after_underscore.char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        script_end = Some(i);
-                        break;
-                    }
-                },
-                _ => {},
-            }
-        }
-        let script_end = script_end?;
-        after_underscore[1..script_end].to_string()
-    } else {
-        // Single character.
-        after_underscore.chars().next()?.to_string()
-    };
-
-    Some((base, script))
-}
-
-/// Try to parse pattern with both subscript and superscript: base_{lower}^{upper} or base^{upper}_{lower}.
-/// Used for big operators like \sum_{i=1}^{n}, \int_a^b, etc.
-fn try_parse_sub_superscript(formula: &str) -> Option<(String, String, String)> {
-    let formula = formula.trim();
-
-    // Don't match complex formulas with spaces or equals signs.
-    if formula.contains(' ') || formula.contains('=') {
-        return None;
-    }
-
-    // Find positions of _ and ^.
-    let underscore_pos = formula.find('_');
-    let caret_pos = formula.find('^');
-
-    // Must have both _ and ^.
-    let (underscore_pos, caret_pos) = match (underscore_pos, caret_pos) {
-        (Some(u), Some(c)) => (u, c),
-        _ => return None,
-    };
-
-    // Determine which comes first.
-    let (first_pos, first_char, _second_pos, second_char) = if underscore_pos < caret_pos {
-        (underscore_pos, '_', caret_pos, '^')
-    } else {
-        (caret_pos, '^', underscore_pos, '_')
-    };
-
-    // Base is everything before the first operator.
-    let base = formula[..first_pos].to_string();
-    if base.is_empty() {
-        return None;
-    }
-
-    // Parse first script.
-    let after_first = &formula[first_pos + 1..];
-    let (first_script, first_script_len) = parse_script_content(after_first)?;
-
-    // Find second operator in remaining string.
-    let remaining = &after_first[first_script_len..];
-    if !remaining.starts_with(second_char) {
-        return None;
-    }
-
-    // Parse second script.
-    let after_second = &remaining[1..];
-    let (second_script, _) = parse_script_content(after_second)?;
-
-    // Assign to lower/upper based on which operator came first.
-    let (lower, upper) = if first_char == '_' {
-        (first_script, second_script)
-    } else {
-        (second_script, first_script)
-    };
-
-    Some((base, lower, upper))
-}
-
-/// Parse script content: either {content} or a single character.
-/// Returns (content, bytes_consumed).
-fn parse_script_content(s: &str) -> Option<(String, usize)> {
-    if s.starts_with('{') {
-        // Find matching }.
-        let mut depth = 0;
-        let mut end = None;
-        for (i, c) in s.char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(i);
-                        break;
-                    }
-                },
-                _ => {},
-            }
-        }
-        let end = end?;
-        Some((s[1..end].to_string(), end + 1))
-    } else {
-        // Single character.
-        let c = s.chars().next()?;
-        Some((c.to_string(), c.len_utf8()))
-    }
-}
-
-/// Parse LaTeX formula and determine its structure.
-fn parse_latex_with_layout(formula: &str) -> ParsedFormula {
-    // Try to parse as a fraction first.
-    if let Some((num, denom)) = try_parse_fraction(formula) {
-        return ParsedFormula::Fraction {
-            numerator: parse_latex_to_chars(&num),
-            denominator: parse_latex_to_chars(&denom),
-        };
-    }
-
-    // Try to parse as sqrt (with optional index for n-th root).
-    if let Some((index, content)) = try_parse_sqrt(formula) {
-        return ParsedFormula::Sqrt {
-            index: index.map(|i| parse_latex_to_chars(&i)),
-            content: parse_latex_to_chars(&content),
-        };
-    }
-
-    // Try to parse as sub+superscript (must check before individual sub/super).
-    // Used for big operators like \sum_{i=1}^{n}, \int_a^b.
-    if let Some((base, lower, upper)) = try_parse_sub_superscript(formula) {
-        return ParsedFormula::SubSuperscript {
-            base: parse_latex_to_chars(&base),
-            lower: parse_latex_to_chars(&lower),
-            upper: parse_latex_to_chars(&upper),
-        };
-    }
-
-    // Try to parse as superscript.
-    if let Some((base, script)) = try_parse_superscript(formula) {
-        return ParsedFormula::Superscript {
-            base: parse_latex_to_chars(&base),
-            script: parse_latex_to_chars(&script),
-        };
-    }
-
-    // Try to parse as subscript.
-    if let Some((base, script)) = try_parse_subscript(formula) {
-        return ParsedFormula::Subscript {
-            base: parse_latex_to_chars(&base),
-            script: parse_latex_to_chars(&script),
-        };
-    }
-
-    // Otherwise, parse as styled simple formula.
-    ParsedFormula::Simple(parse_latex_styled(formula))
-}
-
-/// Get the combining character for a math accent command.
-fn accent_to_combining(cmd: &str) -> Option<char> {
-    match cmd {
-        "hat" => Some('\u{0302}'),              // COMBINING CIRCUMFLEX ACCENT (x̂)
-        "bar" | "overline" => Some('\u{0304}'), // COMBINING MACRON (x̄)
-        "vec" => Some('\u{20D7}'),              // COMBINING RIGHT ARROW ABOVE (x⃗)
-        "dot" => Some('\u{0307}'),              // COMBINING DOT ABOVE (ẋ)
-        "ddot" => Some('\u{0308}'),             // COMBINING DIAERESIS (ẍ)
-        "tilde" => Some('\u{0303}'),            // COMBINING TILDE (x̃)
-        "check" => Some('\u{030C}'),            // COMBINING CARON (x̌)
-        "acute" => Some('\u{0301}'),            // COMBINING ACUTE ACCENT (x́)
-        "grave" => Some('\u{0300}'),            // COMBINING GRAVE ACCENT (x̀)
-        "breve" => Some('\u{0306}'),            // COMBINING BREVE (x̆)
-        _ => None,
-    }
-}
-
-/// Helper to parse a braced argument from char iterator.
-fn parse_braced_arg(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
-    if chars.peek() != Some(&'{') {
-        return String::new();
-    }
-    chars.next(); // consume '{'
-    let mut arg = String::new();
-    let mut depth = 1;
-    while let Some(ch) = chars.next() {
-        match ch {
-            '{' => {
-                depth += 1;
-                arg.push(ch);
-            },
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-                arg.push(ch);
-            },
-            _ => arg.push(ch),
-        }
-    }
-    arg
-}
-
-/// Convert styled spans to a flat Vec<char> (for use in layouts that don't need style info).
-fn spans_to_chars(spans: &[StyledSpan]) -> Vec<char> {
-    spans.iter().flat_map(|s| s.chars.iter().copied()).collect()
-}
-
-/// Parse LaTeX formula into a flat Vec<char> (legacy interface for layouts).
-fn parse_latex_to_chars(formula: &str) -> Vec<char> {
-    spans_to_chars(&parse_latex_styled(formula))
-}
-
-/// Parse LaTeX formula into styled spans for rendering.
-fn parse_latex_styled(formula: &str) -> Vec<StyledSpan> {
-    let mut spans: Vec<StyledSpan> = Vec::new();
-    let mut current = Vec::new();
-    let mut chars = formula.chars().peekable();
-
-    // Helper to flush current chars as Normal span.
-    let flush_normal = |spans: &mut Vec<StyledSpan>, current: &mut Vec<char>| {
-        if !current.is_empty() {
-            spans.push(StyledSpan::normal(std::mem::take(current)));
-        }
-    };
-
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            let mut cmd = String::new();
-            while let Some(&next) = chars.peek() {
-                if next.is_ascii_alphabetic() {
-                    cmd.push(chars.next().unwrap());
-                } else {
-                    break;
-                }
-            }
-
-            // Handle \frac{num}{denom} inline as num/denom.
-            if cmd == "frac" {
-                let num = parse_braced_arg(&mut chars);
-                let denom = parse_braced_arg(&mut chars);
-                if !num.is_empty() && !denom.is_empty() {
-                    // Recursively parse and flatten into current span.
-                    for span in parse_latex_styled(&num) {
-                        flush_normal(&mut spans, &mut current);
-                        spans.push(span);
-                    }
-                    current.push('/');
-                    for span in parse_latex_styled(&denom) {
-                        flush_normal(&mut spans, &mut current);
-                        spans.push(span);
-                    }
-                }
-                continue;
-            }
-
-            // Handle \sqrt{content} or \sqrt[n]{content}.
-            if cmd == "sqrt" {
-                let index = if chars.peek() == Some(&'[') {
-                    chars.next();
-                    let mut idx = String::new();
-                    while let Some(&ch) = chars.peek() {
-                        if ch == ']' {
-                            chars.next();
-                            break;
-                        }
-                        idx.push(chars.next().unwrap());
-                    }
-                    Some(idx)
-                } else {
-                    None
-                };
-                let content = parse_braced_arg(&mut chars);
-                if !content.is_empty() {
-                    if let Some(idx) = index {
-                        // n-th root index as superscript.
-                        flush_normal(&mut spans, &mut current);
-                        let idx_chars: Vec<char> = idx.chars().map(to_math_italic).collect();
-                        spans.push(StyledSpan::superscript(idx_chars));
-                    }
-                    current.push('√');
-                    current.push('(');
-                    for span in parse_latex_styled(&content) {
-                        flush_normal(&mut spans, &mut current);
-                        spans.push(span);
-                    }
-                    current.push(')');
-                }
-                continue;
-            }
-
-            // Check if this is a font/format command.
-            if matches!(cmd.as_str(), "mathbf" | "boldsymbol" | "bm" | "textbf") {
-                let arg = parse_braced_arg(&mut chars);
-                if !arg.is_empty() {
-                    flush_normal(&mut spans, &mut current);
-                    let bold_chars: Vec<char> = arg.chars().map(to_math_bold).collect();
-                    spans.push(StyledSpan::bold(bold_chars));
-                }
-                continue;
-            }
-            if matches!(cmd.as_str(), "mathit" | "textit" | "emph") {
-                let arg = parse_braced_arg(&mut chars);
-                if !arg.is_empty() {
-                    for ch in arg.chars() {
-                        current.push(to_math_italic(ch));
-                    }
-                }
-                continue;
-            }
-            if matches!(cmd.as_str(), "mathrm" | "text" | "textrm" | "mathsf" | "mathtt") {
-                let arg = parse_braced_arg(&mut chars);
-                for ch in arg.chars() {
-                    current.push(ch); // roman: no change
-                }
-                continue;
-            }
-
-            // Check if this is an accent command.
-            if let Some(combining) = accent_to_combining(&cmd) {
-                let arg = parse_braced_arg(&mut chars);
-                if !arg.is_empty() {
-                    for ch in arg.chars() {
-                        current.push(to_math_italic(ch));
-                        if ch.is_alphabetic() {
-                            current.push(combining);
-                        }
-                    }
-                } else if let Some(&ch) = chars.peek() {
-                    chars.next();
-                    current.push(to_math_italic(ch));
-                    current.push(combining);
-                }
-                continue;
-            }
-
-            // Check if this is a known LaTeX command.
-            if let Some(unicode) = latex_to_unicode(&cmd) {
-                for ch in unicode.chars() {
-                    current.push(ch);
-                }
-            } else if !cmd.is_empty() {
-                current.push('\\');
-                for ch in cmd.chars() {
-                    current.push(ch);
-                }
-            } else if let Some(escaped) = chars.next() {
-                current.push(escaped);
-            } else {
-                current.push('\\');
-            }
-        } else if c == '_' {
-            // Handle subscript: _x or _{content}
-            flush_normal(&mut spans, &mut current);
-            let arg = if chars.peek() == Some(&'{') {
-                parse_braced_arg(&mut chars)
-            } else if let Some(&ch) = chars.peek() {
-                chars.next();
-                ch.to_string()
-            } else {
-                String::new()
-            };
-            if !arg.is_empty() {
-                // Recursively parse subscript content.
-                let sub_spans = parse_latex_styled(&arg);
-                // Flatten all sub-spans into a single subscript span.
-                let mut sub_chars = Vec::new();
-                for span in sub_spans {
-                    sub_chars.extend(span.chars);
-                }
-                spans.push(StyledSpan::subscript(sub_chars));
-            }
-        } else if c == '^' {
-            // Handle superscript: ^x or ^{content}
-            flush_normal(&mut spans, &mut current);
-            let arg = if chars.peek() == Some(&'{') {
-                parse_braced_arg(&mut chars)
-            } else if let Some(&ch) = chars.peek() {
-                chars.next();
-                ch.to_string()
-            } else {
-                String::new()
-            };
-            if !arg.is_empty() {
-                let sup_spans = parse_latex_styled(&arg);
-                let mut sup_chars = Vec::new();
-                for span in sup_spans {
-                    sup_chars.extend(span.chars);
-                }
-                spans.push(StyledSpan::superscript(sup_chars));
-            }
-        } else {
-            // Apply math italic to ASCII letters.
-            current.push(to_math_italic(c));
-        }
-    }
-
-    // Flush remaining.
-    flush_normal(&mut spans, &mut current);
-    spans
-}
-
-/// Convert a character to Mathematical Bold Unicode.
-fn to_math_bold(c: char) -> char {
-    match c {
-        // Mathematical Bold Capital: U+1D400 - U+1D419
-        'A'..='Z' => char::from_u32(0x1D400 + (c as u32 - 'A' as u32)).unwrap_or(c),
-        // Mathematical Bold Small: U+1D41A - U+1D433
-        'a'..='z' => char::from_u32(0x1D41A + (c as u32 - 'a' as u32)).unwrap_or(c),
-        // Mathematical Bold Digit: U+1D7CE - U+1D7D7
-        '0'..='9' => char::from_u32(0x1D7CE + (c as u32 - '0' as u32)).unwrap_or(c),
-        _ => c,
     }
 }
 
@@ -2164,40 +1246,160 @@ impl<T> Term<T> {
     }
 
     /// Render a completed LaTeX formula to the terminal grid using Sixel graphics.
+    ///
+    /// For formulas taller than a single cell (e.g., integrals, sums with limits),
+    /// the formula will span multiple rows to avoid overlapping with adjacent lines.
     fn render_latex_formula(&mut self, formula: String, original_width: usize, _is_display: bool)
     where
         T: EventListener,
     {
-        use crate::math::{formula_to_graphic, render_latex_to_png};
+        use crate::math::{formula_to_graphic, render_latex_to_png, FormulaImage};
 
-        // Calculate PPI based on cell height (aim for image height ~ 1.5x cell height for inline)
-        let cell_height = self.graphics.cell_height as f32;
-        let target_height = cell_height * 1.5;
-        // Typst default is 11pt font, which at 72 PPI gives ~15px height
-        // Scale PPI to get desired height
-        let ppi = (target_height / 15.0) * 72.0;
+        // Estimate font size from cell height (cell_height ≈ font_size * 1.3).
+        // Note: cell_height is in device pixels, already scaled for HiDPI.
+        let cell_height = self.graphics.cell_height;
+        let cell_height_usize = cell_height as usize;
+        let font_size_pt = cell_height / 1.3;
 
-        match render_latex_to_png(&formula, ppi) {
-            Ok(image) => {
+        // Render at 1x scale since cell_height is already in device pixels.
+        // The Sixel graphics system displays at native pixel size.
+        let scale = 1.0;
+
+        // Use terminal's default foreground color.
+        let fg_color = self.graphics.default_fg_color;
+
+        // First render without padding to get natural dimensions.
+        match render_latex_to_png(&formula, font_size_pt, scale, fg_color, 0) {
+            Ok(raw_image) => {
                 let start_col = self.grid.cursor.point.column.0;
 
-                // Create graphic data
-                let graphic = formula_to_graphic(image, self.graphics.next_id());
+                // Calculate actual width in cells based on rendered image size.
+                let cell_width = self.graphics.cell_width;
+                let image_width_cells = if cell_width > 0.0 {
+                    ((raw_image.width as f32) / cell_width).ceil() as usize
+                } else {
+                    original_width
+                };
 
-                // Insert inline graphic (no linefeed triggered)
-                crate::graphics::insert_inline_graphic(self, graphic, start_col, original_width);
+                // Check if formula is taller than one cell.
+                if raw_image.height > cell_height_usize {
+                    // Tall formula: insert blank lines above and below the ENTIRE line
+                    // to prevent overlap with adjacent lines.
+                    // The formula stays inline with surrounding text on the same line.
+                    //
+                    // Calculate blank lines based on actual overflow pixels.
+                    // The formula is centered, so overflow is split above/below.
+                    let overflow_total = raw_image.height - cell_height_usize;
+                    let overflow_above = overflow_total / 2;
+                    let overflow_below = overflow_total - overflow_above;
 
-                // Move cursor forward by the formula width
-                for _ in 0..original_width {
-                    self.input_char_internal(' ');
+                    // Convert pixel overflow to number of blank lines needed (round up).
+                    let rows_above =
+                        (overflow_above + cell_height_usize - 1) / cell_height_usize;
+                    let rows_below =
+                        (overflow_below + cell_height_usize - 1) / cell_height_usize;
+
+                    // IMPORTANT: Set mode to Normal BEFORE any terminal operations,
+                    // because insert_blank_lines calls linefeed which calls flush_pending_latex().
+                    self.latex_state.mode = LaTeXMode::Normal;
+
+                    // Insert blank lines ABOVE the current line to prevent upward overflow.
+                    // When cursor is near screen bottom, scroll_down_relative has limited space,
+                    // so we scroll up first to make room before inserting blank lines.
+                    if rows_above > 0 {
+                        let screen_lines = self.screen_lines();
+                        let cursor_line = self.grid.cursor.point.line.0 as usize;
+                        let space_below = screen_lines.saturating_sub(cursor_line + 1);
+
+                        if space_below < rows_above {
+                            // Not enough space below. Scroll up first to make room.
+                            let need_scroll = rows_above - space_below;
+                            for _ in 0..need_scroll {
+                                self.scroll_up(1);
+                            }
+                            // After scroll_up, cursor line number stays the same
+                            // but content has moved up.
+                        }
+
+                        self.insert_blank_lines(rows_above);
+
+                        // Move cursor down to follow the shifted content.
+                        for _ in 0..rows_above {
+                            if (self.grid.cursor.point.line.0 as usize) < screen_lines - 1 {
+                                self.grid.cursor.point.line += 1;
+                            }
+                        }
+                    }
+
+                    // Render the formula inline (text before formula stays on same line).
+                    let graphic = formula_to_graphic(raw_image, self.graphics.next_id());
+                    crate::graphics::insert_inline_graphic(
+                        self,
+                        graphic,
+                        start_col,
+                        image_width_cells,
+                    );
+
+                    // Move cursor forward (text after formula continues on same line).
+                    let new_col = start_col + image_width_cells;
+                    if new_col < self.columns() {
+                        self.grid.cursor.point.column = Column(new_col);
+                    } else {
+                        self.grid.cursor.point.column = Column(self.columns() - 1);
+                    }
+
+                    // Record that we need blank lines below when this line ends.
+                    // This is stored in latex_state and processed when linefeed occurs.
+                    self.latex_state.pending_lines_below = rows_below;
+                } else {
+                    // Normal height formula: add padding to center within cell.
+                    let image = if raw_image.height < cell_height_usize {
+                        let padding_top = (cell_height_usize - raw_image.height) / 2;
+                        let new_height = cell_height_usize;
+                        let mut new_pixels = vec![0u8; raw_image.width * new_height * 4];
+
+                        for y in 0..raw_image.height {
+                            let src_offset = y * raw_image.width * 4;
+                            let dst_offset = (y + padding_top) * raw_image.width * 4;
+                            new_pixels[dst_offset..dst_offset + raw_image.width * 4]
+                                .copy_from_slice(
+                                    &raw_image.pixels[src_offset..src_offset + raw_image.width * 4],
+                                );
+                        }
+
+                        FormulaImage {
+                            width: raw_image.width,
+                            height: new_height,
+                            pixels: new_pixels,
+                        }
+                    } else {
+                        raw_image
+                    };
+
+                    let graphic = formula_to_graphic(image, self.graphics.next_id());
+                    crate::graphics::insert_inline_graphic(
+                        self,
+                        graphic,
+                        start_col,
+                        image_width_cells,
+                    );
+
+                    // Move cursor forward based on actual image width.
+                    let new_col = start_col + image_width_cells;
+                    if new_col < self.columns() {
+                        self.grid.cursor.point.column = Column(new_col);
+                    } else {
+                        self.grid.cursor.point.column = Column(self.columns() - 1);
+                    }
                 }
             },
-            Err(e) => {
-                // Fallback: output original formula text
-                log::warn!("Failed to render LaTeX formula: {}", e);
+            Err(_) => {
+                // Render failed: silently fall back to showing original LaTeX with delimiters.
+                self.input_char_internal('$');
                 for c in formula.chars() {
                     self.input_char_internal(c);
                 }
+                self.input_char_internal('$');
             },
         }
 
@@ -2764,7 +1966,13 @@ impl<T: EventListener> Handler for Term<T> {
     /// Carriage return.
     #[inline]
     fn carriage_return(&mut self) {
-        self.flush_pending_latex();
+        // For display math, don't flush - CR is often paired with LF.
+        if !matches!(
+            self.latex_state.mode,
+            LaTeXMode::InDisplayMath | LaTeXMode::PendingDisplayEnd
+        ) {
+            self.flush_pending_latex();
+        }
         trace!("Carriage return");
         let new_col = 0;
         let line = self.grid.cursor.point.line.0 as usize;
@@ -2776,8 +1984,23 @@ impl<T: EventListener> Handler for Term<T> {
     /// Linefeed.
     #[inline]
     fn linefeed(&mut self) {
-        self.flush_pending_latex();
+        // For display math ($$...$$), don't flush - just add a space.
+        // This keeps the formula collection intact when output spans multiple lines.
+        if matches!(
+            self.latex_state.mode,
+            LaTeXMode::InDisplayMath | LaTeXMode::PendingDisplayEnd
+        ) {
+            self.latex_state.buffer.push(' ');
+        } else {
+            self.flush_pending_latex();
+        }
         trace!("Linefeed");
+
+        // Check if we need to insert blank lines below (for tall formulas).
+        let pending_lines = self.latex_state.pending_lines_below;
+        self.latex_state.pending_lines_below = 0;
+
+        // Perform the actual linefeed.
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
             self.scroll_up(1);
@@ -2785,6 +2008,18 @@ impl<T: EventListener> Handler for Term<T> {
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
             self.damage_cursor();
+        }
+
+        // Insert any pending blank lines below.
+        for _ in 0..pending_lines {
+            let next = self.grid.cursor.point.line + 1;
+            if next == self.scroll_region.end {
+                self.scroll_up(1);
+            } else if next < self.screen_lines() {
+                self.damage_cursor();
+                self.grid.cursor.point.line += 1;
+                self.damage_cursor();
+            }
         }
     }
 
@@ -2839,14 +2074,26 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
-        self.flush_pending_latex();
+        // Don't flush in display math mode.
+        if !matches!(
+            self.latex_state.mode,
+            LaTeXMode::InDisplayMath | LaTeXMode::PendingDisplayEnd
+        ) {
+            self.flush_pending_latex();
+        }
         let origin = self.scroll_region.start;
         self.scroll_up_relative(origin, lines);
     }
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
-        self.flush_pending_latex();
+        // Don't flush in display math mode.
+        if !matches!(
+            self.latex_state.mode,
+            LaTeXMode::InDisplayMath | LaTeXMode::PendingDisplayEnd
+        ) {
+            self.flush_pending_latex();
+        }
         let origin = self.scroll_region.start;
         self.scroll_down_relative(origin, lines);
     }
@@ -3243,7 +2490,11 @@ impl<T: EventListener> Handler for Term<T> {
     /// Set a terminal attribute.
     #[inline]
     fn terminal_attribute(&mut self, attr: Attr) {
-        self.flush_pending_latex();
+        // Don't flush LaTeX when in math mode - attributes (colors, bold, etc.)
+        // should not interrupt formula collection.
+        if matches!(self.latex_state.mode, LaTeXMode::Normal | LaTeXMode::PendingDollar) {
+            self.flush_pending_latex();
+        }
         trace!("Setting attribute: {attr:?}");
         let cursor = &mut self.grid.cursor;
         match attr {
@@ -4754,77 +4005,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod parse_tests {
-    use super::*;
-
-    #[test]
-    fn test_superscript_parsing() {
-        let result = parse_latex_with_layout("x^2");
-        match result {
-            ParsedFormula::Superscript { base, script } => {
-                // 'x' becomes math italic '𝑥' (U+1D465)
-                assert_eq!(base, vec!['𝑥']);
-                assert_eq!(script, vec!['2']);
-            },
-            other => panic!("Expected Superscript, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_subscript_parsing() {
-        let result = parse_latex_with_layout("x_2");
-        match result {
-            ParsedFormula::Subscript { base, script } => {
-                // 'x' becomes math italic '𝑥' (U+1D465)
-                assert_eq!(base, vec!['𝑥']);
-                assert_eq!(script, vec!['2']);
-            },
-            other => panic!("Expected Subscript, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_superscript_braces_parsing() {
-        let result = parse_latex_with_layout("x^{12}");
-        match result {
-            ParsedFormula::Superscript { base, script } => {
-                // 'x' becomes math italic '𝑥' (U+1D465)
-                assert_eq!(base, vec!['𝑥']);
-                assert_eq!(script, vec!['1', '2']);
-            },
-            other => panic!("Expected Superscript, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_math_italic_conversion() {
-        // Test that ASCII letters are converted to math italic
-        let result: String = parse_latex_to_chars("abc").into_iter().collect();
-        assert_eq!(result, "𝑎𝑏𝑐");
-
-        // Test uppercase
-        let result: String = parse_latex_to_chars("ABC").into_iter().collect();
-        assert_eq!(result, "𝐴𝐵𝐶");
-
-        // Test mixed case
-        let result: String = parse_latex_to_chars("aA").into_iter().collect();
-        assert_eq!(result, "𝑎𝐴");
-
-        // Test that numbers stay unchanged
-        let result: String = parse_latex_to_chars("123").into_iter().collect();
-        assert_eq!(result, "123");
-
-        // Test that operators stay unchanged
-        let result: String = parse_latex_to_chars("a + b = c").into_iter().collect();
-        assert_eq!(result, "𝑎 + 𝑏 = 𝑐");
-
-        // Test special case: 'h' maps to U+210E (Planck constant)
-        let result: String = parse_latex_to_chars("h").into_iter().collect();
-        assert_eq!(result, "ℎ");
-
-        // Test full expression
-        let result: String = parse_latex_to_chars("f(x) = ax + b").into_iter().collect();
-        assert_eq!(result, "𝑓(𝑥) = 𝑎𝑥 + 𝑏");
-    }
-}

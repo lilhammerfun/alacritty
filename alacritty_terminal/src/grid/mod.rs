@@ -528,6 +528,18 @@ pub trait Dimensions {
     fn cell_width(&self) -> f32 {
         0.0
     }
+
+    /// Display scale factor for HiDPI support.
+    #[inline]
+    fn scale_factor(&self) -> f32 {
+        1.0
+    }
+
+    /// Default foreground color as RGB.
+    #[inline]
+    fn default_fg_color(&self) -> [u8; 3] {
+        [255, 255, 255]
+    }
 }
 
 impl<G> Dimensions for Grid<G> {

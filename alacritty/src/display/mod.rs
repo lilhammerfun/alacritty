@@ -141,7 +141,7 @@ impl From<glutin::error::Error> for Error {
 }
 
 /// Terminal size info.
-#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
 pub struct SizeInfo<T = f32> {
     /// Terminal window width.
     width: T,
@@ -166,6 +166,12 @@ pub struct SizeInfo<T = f32> {
 
     /// Number of columns in the viewport.
     columns: usize,
+
+    /// Display scale factor for HiDPI support.
+    scale_factor: f32,
+
+    /// Default foreground color as RGB.
+    default_fg_color: [u8; 3],
 }
 
 impl From<SizeInfo<f32>> for SizeInfo<u32> {
@@ -179,6 +185,8 @@ impl From<SizeInfo<f32>> for SizeInfo<u32> {
             padding_y: size_info.padding_y as u32,
             screen_lines: size_info.screen_lines,
             columns: size_info.screen_lines,
+            scale_factor: size_info.scale_factor,
+            default_fg_color: size_info.default_fg_color,
         }
     }
 }
@@ -233,9 +241,24 @@ impl SizeInfo<f32> {
         height: f32,
         cell_width: f32,
         cell_height: f32,
+        padding_x: f32,
+        padding_y: f32,
+        dynamic_padding: bool,
+    ) -> SizeInfo {
+        Self::with_scale(width, height, cell_width, cell_height, padding_x, padding_y, dynamic_padding, 1.0, [255, 255, 255])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_scale(
+        width: f32,
+        height: f32,
+        cell_width: f32,
+        cell_height: f32,
         mut padding_x: f32,
         mut padding_y: f32,
         dynamic_padding: bool,
+        scale_factor: f32,
+        default_fg_color: [u8; 3],
     ) -> SizeInfo {
         if dynamic_padding {
             padding_x = Self::dynamic_padding(padding_x.floor(), width, cell_width);
@@ -257,6 +280,8 @@ impl SizeInfo<f32> {
             padding_y: padding_y.floor(),
             screen_lines,
             columns,
+            scale_factor,
+            default_fg_color,
         }
     }
 
@@ -307,6 +332,16 @@ impl TermDimensions for SizeInfo {
     #[inline]
     fn cell_width(&self) -> f32 {
         self.cell_width
+    }
+
+    #[inline]
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    #[inline]
+    fn default_fg_color(&self) -> [u8; 3] {
+        self.default_fg_color
     }
 }
 
@@ -458,7 +493,8 @@ impl Display {
         let viewport_size = window.inner_size();
 
         // Create new size with at least one column and row.
-        let size_info = SizeInfo::new(
+        let fg = config.colors.primary.foreground.as_tuple();
+        let size_info = SizeInfo::with_scale(
             viewport_size.width as f32,
             viewport_size.height as f32,
             cell_width,
@@ -466,6 +502,8 @@ impl Display {
             padding.0,
             padding.1,
             config.window.dynamic_padding && config.window.dimensions().is_none(),
+            scale_factor,
+            [fg.0, fg.1, fg.2],
         );
 
         info!("Cell size: {cell_width} x {cell_height}");
@@ -698,8 +736,9 @@ impl Display {
         }
 
         let padding = config.window.padding(self.window.scale_factor as f32);
+        let fg = config.colors.primary.foreground.as_tuple();
 
-        let mut new_size = SizeInfo::new(
+        let mut new_size = SizeInfo::with_scale(
             width,
             height,
             cell_width,
@@ -707,6 +746,8 @@ impl Display {
             padding.0,
             padding.1,
             config.window.dynamic_padding,
+            self.window.scale_factor as f32,
+            [fg.0, fg.1, fg.2],
         );
 
         // Update number of column/lines in the viewport.

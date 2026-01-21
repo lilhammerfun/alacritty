@@ -2,7 +2,33 @@
     <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
 
-<h1 align="center">Alacritty - A fast, cross-platform, OpenGL terminal emulator</h1>
+<h1 align="center">Alacritty Math</h1>
+
+> Fork of Alacritty with inline LaTeX formula rendering.
+
+## What's Different
+
+**Why**: Render LaTeX formulas as inline images in terminal output (e.g., when using Claude Code or other AI tools that output math).
+
+**How**:
+- Detect `$...$` and `$$...$$` in terminal output
+- Convert LaTeX to Typst via MiTeX, render to PNG, display using Sixel
+- Use OSC 133 shell integration to only render in command output areas (not in prompts or user input)
+- Auto-fix matrix row separators (`\\` → double space → `\\`)
+
+**Known Issues**:
+- Formulas lost on terminal resize (Sixel graphics limitation in Alacritty)
+- Matrix `\\` sometimes replaced with spaces by upstream programs (auto-fixed via heuristics)
+
+**Config** (`~/.config/alacritty/alacritty.toml`):
+```toml
+[math]
+enabled = true
+```
+
+---
+
+<h2 align="center">Original Alacritty README</h2>
 
 <p align="center">
   <img alt="Alacritty - A fast, cross-platform, OpenGL terminal emulator"

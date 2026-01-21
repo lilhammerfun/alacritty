@@ -312,6 +312,12 @@ pub struct Graphics {
     /// Cell width in pixels.
     pub cell_width: f32,
 
+    /// Display scale factor for HiDPI support.
+    pub scale_factor: f32,
+
+    /// Default foreground color as RGB.
+    pub default_fg_color: [u8; 3],
+
     /// Current Sixel parser.
     pub sixel_parser: Option<Box<sixel::Parser>>,
 }
@@ -357,10 +363,12 @@ impl Graphics {
         Some(UpdateQueues { pending: mem::take(&mut self.pending), remove_queue, clear_subregions })
     }
 
-    /// Update cell dimensions.
+    /// Update cell dimensions and display parameters.
     pub fn resize<S: Dimensions>(&mut self, size: &S) {
         self.cell_height = size.cell_height();
         self.cell_width = size.cell_width();
+        self.scale_factor = size.scale_factor();
+        self.default_fg_color = size.default_fg_color();
     }
 
     pub fn graphics_attribute<L: EventListener>(&self, event_proxy: &L, pi: u16, pa: u16) {
@@ -652,7 +660,8 @@ pub fn insert_inline_graphic<L: EventListener>(
         return;
     }
 
-    let graphic_id = term.graphics.next_id();
+    // Use the ID from the passed graphic (already assigned by caller).
+    let graphic_id = graphic.id;
 
     // Calculate vertical offset to center the image on the baseline.
     // If image is taller than cell, it will overflow above and below.
@@ -673,15 +682,23 @@ pub fn insert_inline_graphic<L: EventListener>(
 
     let line = term.grid().cursor.point.line;
 
-    // Only add graphic references to the horizontal cells the formula occupies.
+    // Calculate how many cells the image actually covers (round up).
+    let cells_covered = (graphic.width + cell_width - 1) / cell_width;
+    let cells_to_use = cmp::min(cells_covered, char_width);
+
+    // Only add graphic references to cells the image actually covers.
     // No linefeed is triggered - the image will visually overflow.
     let row_len = term.grid()[line].len();
-    for (i, col) in (start_col..start_col + char_width).enumerate() {
+    for (i, col) in (start_col..start_col + cells_to_use).enumerate() {
         if col >= row_len {
             break;
         }
 
         let offset_x = (i * cell_width) as u16;
+        // Ensure offset_x doesn't exceed image width.
+        if offset_x >= width {
+            break;
+        }
 
         let texture_operations = Arc::downgrade(&term.graphics.texture_operations);
         let graphic_cell = GraphicCell {

@@ -104,8 +104,16 @@ pub fn compile_math(typst_math: &str) -> Result<Frame, Vec<String>> {
 }
 
 /// Compile Typst math source and return the PagedDocument for rendering.
-pub fn compile_math_document(typst_math: &str) -> Result<PagedDocument, Vec<String>> {
-    let source = format!("$ {} $", typst_math);
+///
+/// `font_size_pt` sets the base font size in points (e.g., 16.0 for 16pt).
+pub fn compile_math_document(typst_math: &str, font_size_pt: f32, fg_color: [u8; 3]) -> Result<PagedDocument, Vec<String>> {
+    // Use auto page size to fit content exactly.
+    // Set font size to match terminal font.
+    // Use transparent background and terminal foreground color.
+    let source = format!(
+        "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n#set text(size: {}pt, fill: rgb({}, {}, {}))\n$ {} $",
+        font_size_pt, fg_color[0], fg_color[1], fg_color[2], typst_math
+    );
     let world = MathWorld::new(&source);
 
     let result = typst::compile::<PagedDocument>(&world);
