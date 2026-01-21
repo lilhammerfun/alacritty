@@ -19,6 +19,7 @@
 **Known Issues**:
 - Formulas lost on terminal resize (Sixel graphics limitation in Alacritty)
 - Matrix `\\` sometimes replaced with spaces by upstream programs (auto-fixed via heuristics)
+- Mysterious horizontal lines (`────────`) may appear around rendered formulas (cause unknown)
 
 **Config** (`~/.config/alacritty/alacritty.toml`):
 ```toml
